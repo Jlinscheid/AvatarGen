@@ -10,6 +10,7 @@ import os
 import random
 import re
 import time
+import urllib.error
 import urllib.request
 
 from .logging_util import get_logger
@@ -155,6 +156,17 @@ class ComfyClient:
                   wf["8"]["inputs"]["filename_prefix"], wf["1"]["inputs"]["ckpt_name"],
                   wf["2"]["inputs"]["seed"])
         log.info("prompt: %s", wf["3"]["inputs"]["text"])
+        # Validate the checkpoint exists before queueing — /prompt 400s on a
+        # bad ckpt_name and this gives a far clearer message (D42 model list).
+        ckpt = wf["1"]["inputs"]["ckpt_name"]
+        try:
+            installed = self.list_checkpoints()
+        except Exception as e:  # noqa: BLE001 — ComfyUI may be mid-reload
+            log.warning("could not list checkpoints to validate %r: %s", ckpt, e)
+            installed = None
+        if installed is not None and ckpt not in installed:
+            raise RuntimeError(
+                f"Checkpoint {ckpt!r} not found on ComfyUI. Installed: {installed}")
         req = urllib.request.Request(
             f"{self.endpoint}/prompt",
             data=json.dumps({"prompt": wf}).encode(),
@@ -162,6 +174,11 @@ class ComfyClient:
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 pid = json.loads(r.read())["prompt_id"]
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            log.error("queue request failed for %s: HTTP %s — body: %s",
+                      wf["8"]["inputs"]["filename_prefix"], e.code, body)
+            raise RuntimeError(f"ComfyUI rejected the workflow (HTTP {e.code}): {body}") from e
         except Exception as e:
             log.error("queue request failed for %s: %s",
                       wf["8"]["inputs"]["filename_prefix"], e)
