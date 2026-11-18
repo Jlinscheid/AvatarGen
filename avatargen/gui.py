@@ -468,7 +468,7 @@ DEFAULT_SETTINGS = {
     "seed": 1234,
     "logging": False,
     "endpoint": "http://127.0.0.1:8188",
-    "checkpoint": "flux1-schnell-fp8Checkpoint.safetensors",
+    "checkpoint": "flux1-schnell-fp8.safetensors",
     "threshold": 100,
     "count_default": 10,
     "output_dir": RENDER_DIR,

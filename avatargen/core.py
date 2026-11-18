@@ -146,8 +146,9 @@ class ComfyClient:
         with urllib.request.urlopen(
                 f"{self.endpoint}/object_info/CheckpointLoaderSimple", timeout=10) as r:
             info = json.loads(r.read())
-        names = [c["name"] for c in
-                 info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]]
+        raw = info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+        # Entries are plain names (strings) in current ComfyUI; tolerate dicts.
+        names = [c["name"] if isinstance(c, dict) else c for c in raw]
         log.info("fetched %d checkpoints from %s", len(names), self.endpoint)
         return names
 
