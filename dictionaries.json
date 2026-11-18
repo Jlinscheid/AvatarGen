@@ -1,0 +1,61 @@
+{
+  "sides": [
+    {"id": "veldmark", "display_name": "Veldmark", "flavor": "northern European, fair-haired, wool field dress"},
+    {"id": "ostmark", "display_name": "Ostmark", "flavor": "central European, darker features, grey-green wool"},
+    {"id": "alsenne", "display_name": "Alsenne", "flavor": "alpine southern European, olive tones"},
+    {"id": "kavrava", "display_name": "Kavrava", "flavor": "eastern European, high-collared plain cuts"},
+    {"id": "meridon", "display_name": "Meridon", "flavor": "Mediterranean, sun-weathered features, light cotton"},
+    {"id": "thuleheim", "display_name": "Thuleheim", "flavor": "Baltic, heavy coats, fur-collared field wear"}
+  ],
+  "subject_types": [
+    {"id": "politician", "display_name": "Politician", "military": false},
+    {"id": "industrialist", "display_name": "Industrialist", "military": false},
+    {"id": "scientist", "display_name": "Scientist", "military": false},
+    {"id": "army_officer", "display_name": "Army Officer", "military": true},
+    {"id": "air_force_officer", "display_name": "Air Force Officer", "military": true},
+    {"id": "naval_officer", "display_name": "Naval Officer", "military": true}
+  ],
+  "ethnicities": [
+    {"id": "black", "display_name": "Black", "prompt": "a Black"},
+    {"id": "white", "display_name": "White (European)", "prompt": "a white"},
+    {"id": "east_asian", "display_name": "East Asian", "prompt": "an East Asian"},
+    {"id": "south_asian", "display_name": "South Asian", "prompt": "a South Asian"},
+    {"id": "southeast_asian", "display_name": "Southeast Asian", "prompt": "a Southeast Asian"},
+    {"id": "middle_eastern", "display_name": "Middle Eastern", "prompt": "a Middle Eastern"},
+    {"id": "latino", "display_name": "Latino/Hispanic", "prompt": "a Latino"},
+    {"id": "central_asian", "display_name": "Central Asian", "prompt": "a Central Asian"},
+    {"id": "indigenous", "display_name": "Indigenous", "prompt": "an Indigenous"}
+  ],
+  "uniforms": [
+    {"id": "suit", "display_name": "Suit", "applies_to": ["politician", "industrialist"],
+     "prompt_text": "tailored dark two-piece suit, waistcoat, tie, pocket square"},
+    {"id": "frock_coat", "display_name": "Frock coat", "applies_to": ["politician"],
+     "prompt_text": "formal frock coat with lapel decorations"},
+    {"id": "heavy_overcoat", "display_name": "Heavy overcoat", "applies_to": ["politician", "industrialist"],
+     "prompt_text": "heavy wool overcoat with hat, outdoor wear"},
+    {"id": "business_attire", "display_name": "Business attire", "applies_to": ["industrialist"],
+     "prompt_text": "plain dark business suit, minimal decoration"},
+    {"id": "lab_coat", "display_name": "Lab coat", "applies_to": ["scientist"],
+     "prompt_text": "white laboratory coat over shirt and tie"},
+    {"id": "service_dress", "display_name": "Service dress", "applies_to": ["army_officer", "air_force_officer", "naval_officer"],
+     "prompt_text": "formal wool service dress with brass buttons and belt"},
+    {"id": "field_uniform", "display_name": "Field uniform", "applies_to": ["army_officer", "air_force_officer", "naval_officer"],
+     "prompt_text": "practical field tunic, webbing straps, field cap"},
+    {"id": "flight_suit", "display_name": "Flight suit", "applies_to": ["air_force_officer"],
+     "prompt_text": "one-piece flight suit with zip front and side cap"}
+  ],
+  "compositions": [
+    {"id": "formal_portrait", "display_name": "Formal portrait",
+     "prompt_text": "head and shoulders, direct gaze, centered formal composition, plain studio backdrop"},
+    {"id": "cropped_group", "display_name": "Cropped formal group photo",
+     "prompt_text": "tightly cropped group of two or three subjects at frame edge, formal posture, plain backdrop"},
+    {"id": "informal_group", "display_name": "Informal group photo",
+     "prompt_text": "two or three subjects at ease, candid framing, gaze off-camera, natural setting"},
+    {"id": "laboratory", "display_name": "Laboratory scene",
+     "prompt_text": "subject at work among glassware and instruments, dim interior light, candid framing"},
+    {"id": "factory", "display_name": "Factory scene",
+     "prompt_text": "subject among machinery and workbenches, hard industrial lighting, candid framing"},
+    {"id": "battle", "display_name": "Battle scene",
+     "prompt_text": "subject in action at the front, dust and smoke, motion blur, documentary framing"}
+  ]
+}
