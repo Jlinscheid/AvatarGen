@@ -326,6 +326,7 @@ class TemplateTab(QWidget):
             self.worker.abort()
             return
         self.sync()
+        self.settings["count"] = self.count.value()
         self.run_btn.setText("ABORT")
         self.count.setEnabled(False)
         self.worker = RenderWorker(self.template, self.dicts, self.settings)
