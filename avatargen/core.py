@@ -207,21 +207,28 @@ class ComfyClient:
             with urllib.request.urlopen(f"{self.endpoint}/history/{pid}", timeout=30) as r:
                 hist = json.loads(r.read())
             if pid in hist and hist[pid].get("status", {}).get("completed"):
-                if hist[pid]["status"].get("status_str") == "error":
-                    log.error("ComfyUI reported error for %s", pid)
+                status = hist[pid]["status"]
+                if status.get("status_str") == "error":
+                    log.error("ComfyUI reported error for %s: %s", pid,
+                              json.dumps(status.get("messages", []))[:400])
                     raise RuntimeError(f"ComfyUI error for {pid}")
-                outputs = hist[pid].get("outputs", {}).get("8", {}).get("images", [])
+                # Collect images from ANY output node — do not assume the
+                # SaveImage node kept id "8" (ComfyUI may renumber; found in
+                # integration testing where outputs was {} under key "8").
+                outputs = []
+                for node_out in (hist[pid].get("outputs") or {}).values():
+                    outputs.extend(node_out.get("images", []))
                 if not outputs:
-                    # Never treat this as success silently — dump the actual
-                    # structure so mismatches are diagnosable (seen in first
-                    # integration test: image "done" but nothing displayed).
-                    log.error("prompt %s completed but outputs empty/missing — "
-                              "raw outputs: %s", pid,
-                              json.dumps(hist[pid].get("outputs", {})))
+                    # Never treat this as success silently — dump the whole
+                    # history entry so mismatches are diagnosable.
+                    raw = json.dumps(hist[pid])
+                    log.error("prompt %s completed but no images found — "
+                              "history entry: %s", pid, raw[:800])
                     raise RuntimeError(
                         f"ComfyUI returned no image for {pid} "
-                        f"(outputs: {json.dumps(hist[pid].get('outputs', {}))[:400]})")
-                log.info("finished %s in %.1fs, outputs=%s", pid, time.time() - t0, outputs)
+                        f"(history: {raw[:400]})")
+                log.info("finished %s in %.1fs, %d image(s)", pid,
+                         time.time() - t0, len(outputs))
                 return outputs
             time.sleep(1.0)
         log.error("timeout waiting for %s after %ss", pid, timeout)
