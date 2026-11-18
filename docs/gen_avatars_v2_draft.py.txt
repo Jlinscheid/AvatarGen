@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""
+v2: random-sampling batch generator for WWII-fantasy officer portraits, ComfyUI API.
+
+Changes vs v1 (gen_avatars.py):
+  - No factorial grid. You ask for N images; every image draws its attributes
+    at random from the option sets (nation, rank, age-in-range, demeanor,
+    uniform variant, lighting). Duplicates are avoided by unique random seeds.
+  - AGE is now a random integer in a range (optionally biased by rank).
+  - UNIFORM is now an axis: each nation has 'formal' and 'combat' variants,
+    chosen randomly per image.
+  - Same workflow graph, same ComfyUI API client, same postprocess.
+
+Usage:
+    python gen_avatars_v2.py --n 4800            # 4,800 randomly-sampled portraits
+    python gen_avatars_v2.py --n 20              # smoke test
+    python gen_avatars_v2.py --nations veldmark  # restrict one axis
+    python gen_avatars_v2.py --postprocess       # only: downscale raw -> game_512 jpg
+
+Requirements:  pip install requests pillow
+Run ComfyUI first (Pinokio) so http://127.0.0.1:8188 is live.
+
+No resume logic: SaveImage never overwrites (appends counters) and every image
+uses a unique seed, so a restart simply continues producing new images.
+"""
+
+import argparse
+import json
+import os
+import random
+import sys
+import time
+import urllib.request
+
+from PIL import Image
+
+COMFY = "http://127.0.0.1:8188"
+OUT_SUBDIR = "wwii_portraits"     # inside ComfyUI/output/
+RAW_SIZE = 1024
+GAME_SIZE = 512
+JPEG_QUALITY = 85
+
+STYLE_CORE = (
+    "1940s black and white formal military portrait photograph, head and shoulders, "
+    "large format film look, silver gelatin print, vintage film grain, slight dust "
+    "and scratches, shallow depth of field, direct gaze, centered formal composition"
+)
+
+NEGATIVE = (
+    "color, sepia, illustration, digital art, cartoon, anime, modern, smooth skin, "
+    "watermark, text, low quality, swastika, nazi symbols"
+)
+
+# ----------------------------------------------------------------------------
+# Fictional nations — insignia invented on purpose (see HANDOFF.md policy).
+# Each nation now has TWO uniform variants: formal dress and field/combat.
+# ----------------------------------------------------------------------------
+
+NATIONS = {
+    "veldmark": {
+        "flavor": "stern imperial field officer",
+        "insignia": "peaked cap with a bronze griffon-over-crossed-keys cap badge, "
+                    "griffon crest on plain collar tabs, ribbon bars",
+        "uniform_formal": "dark green wool dress greatcoat with polished buttons, "
+                          "leather strap, peaked cap",
+        "uniform_combat": "dark green field tunic under a wool greatcoat, mud-flecked "
+                          "shoulders, field cap, leather equipment straps",
+    },
+    "ostrand": {
+        "flavor": "republican senior officer",
+        "insignia": "peaked cap with a silver star-in-laurel-wreath cap badge, "
+                    "five-star rank boards, ribbon bars",
+        "uniform_formal": "olive drab service tunic, brass buttons, officer peaked cap, "
+                          "shirt and tie",
+        "uniform_combat": "olive drab combat jacket, helmet pushed back on the head, "
+                          "webbing straps over the shoulders",
+    },
+    "averne": {
+        "flavor": "professional line officer",
+        "insignia": "lion-head-over-crown regimental cap badge, pip rank boards",
+        "uniform_formal": "khaki dress tunic, collar and tie, peaked cap",
+        "uniform_combat": "khaki battledress, wool sweater underneath, beret pushed "
+                          "back, leather jerkin",
+    },
+    "karsk": {
+        "flavor": "battle-hardened commander",
+        "insignia": "wheat-sheaf-in-star cap badge, red and gold rank boards, "
+                    "campaign ribbon bars",
+        "uniform_formal": "brown parade tunic with gilt shoulder boards, peaked cap, "
+                          "medal ribbons",
+        "uniform_combat": "brown padded field tunic, fur collar, ushanka-style field "
+                          "cap, mud-caked boots visible at frame edge",
+    },
+}
+
+# ----------------------------------------------------------------------------
+# Option sets — each image draws one entry per axis at random.
+# ----------------------------------------------------------------------------
+
+RANKS = ["captain", "major", "colonel", "general"]
+
+# Age range by rank: senior rank skews older. (lo, hi) inclusive.
+AGE_RANGE_BY_RANK = {
+    "captain": (34, 48),
+    "major":   (38, 54),
+    "colonel": (42, 60),
+    "general": (48, 65),
+}
+
+DEMEANORS = [
+    "resolute expression",
+    "weary expression, heavy-lidded eyes",
+    "stern hard stare",
+    "faint knowing smile",
+    "guarded, unreadable expression",
+    "quiet amusement in the eyes",
+]
+
+LIGHTING = {
+    "studio": "studio key light from the left, neutral canvas backdrop, sharp focus",
+    "field": "flat overcast outdoor daylight, blurred field horizon behind the subject",
+}
+LIGHTING_KEYS = sorted(LIGHTING)
+
+UNIFORM_VARIANTS = ["formal", "combat"]
+
+# ----------------------------------------------------------------------------
+# Random attribute draw
+# ----------------------------------------------------------------------------
+
+def draw_attributes(rng: random.Random) -> dict:
+    rank = rng.choice(RANKS)
+    lo, hi = AGE_RANGE_BY_RANK[rank]
+    age = rng.randint(lo, hi)
+    nation = rng.choice(sorted(NATIONS))
+    return {
+        "nation": nation,
+        "rank": rank,
+        "age": age,
+        "demeanor": rng.choice(DEMEANORS),
+        "uniform_variant": rng.choice(UNIFORM_VARIANTS),
+        "lighting": rng.choice(LIGHTING_KEYS),
+    }
+
+
+def build_prompt(a: dict) -> str:
+    n = NATIONS[a["nation"]]
+    uni = n[f"uniform_{a['uniform_variant']}"]
+    return (
+        f"{STYLE_CORE}, a {a['age']}-year-old {n['flavor']}, {a['demeanor']}, "
+        f"wearing a {uni}, {n['insignia']}, {a['rank']} rank insignia, "
+        f"{LIGHTING[a['lighting']]}"
+    )
+
+
+def prefix_for(a: dict, seed: int) -> str:
+    return (f"{OUT_SUBDIR}/{a['nation']}_{a['rank']}_{a['age']}"
+            f"_{a['uniform_variant']}_{a['lighting']}_{seed:010d}")
+
+# ----------------------------------------------------------------------------
+# API-format workflow (same graph as v1)
+# ----------------------------------------------------------------------------
+
+WORKFLOW_TEMPLATE = {
+    "1": {
+        "class_type": "CheckpointLoaderSimple", "_meta": {"title": "Load Checkpoint"},
+        "inputs": {"ckpt_name": "<ckpt>"},
+    },
+    "3": {
+        "class_type": "CLIPTextEncode", "_meta": {"title": "Prompt"},
+        "inputs": {"clip": ["1", 1], "text": "<prompt>"},
+    },
+    "4": {
+        "class_type": "CLIPTextEncode", "_meta": {"title": "Negative"},
+        "inputs": {"clip": ["1", 1], "text": NEGATIVE},
+    },
+    "5": {
+        "class_type": "EmptyLatentImage", "_meta": {"title": "Latent"},
+        "inputs": {"width": RAW_SIZE, "height": RAW_SIZE, "batch_size": 1},
+    },
+    "2": {
+        "class_type": "KSampler", "_meta": {"title": "KSampler"},
+        "inputs": {
+            "model": ["1", 0], "positive": ["3", 0], "negative": ["4", 0],
+            "latent_image": ["5", 0],
+            "seed": "<seed>", "steps": 4, "cfg": 1.0,
+            "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
+        },
+    },
+    "7": {
+        "class_type": "VAEDecode", "_meta": {"title": "VAE Decode"},
+        "inputs": {"samples": ["2", 0], "vae": ["1", 2]},
+    },
+    "8": {
+        "class_type": "SaveImage", "_meta": {"title": "Save"},
+        "inputs": {"images": ["7", 0], "filename_prefix": "<prefix>"},
+    },
+}
+
+CKPT = "flux1-schnell-fp8Checkpoint.safetensors"
+
+# ----------------------------------------------------------------------------
+# ComfyUI API client
+# ----------------------------------------------------------------------------
+
+def queue_and_wait(workflow: dict, timeout: int = 600) -> None:
+    req = urllib.request.Request(
+        f"{COMFY}/prompt",
+        data=json.dumps({"prompt": workflow}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        prompt_id = json.loads(r.read())["prompt_id"]
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        with urllib.request.urlopen(f"{COMFY}/history/{prompt_id}", timeout=30) as r:
+            hist = json.loads(r.read())
+        if prompt_id in hist:
+            entry = hist[prompt_id]
+            if entry.get("status", {}).get("completed"):
+                if entry["status"].get("status_str") == "error":
+                    raise RuntimeError(f"ComfyUI reported error for {prompt_id}")
+                return
+        time.sleep(1.0)
+    raise TimeoutError(f"Image {prompt_id} did not finish in {timeout}s")
+
+# ----------------------------------------------------------------------------
+# Generation loop — N random draws
+# ----------------------------------------------------------------------------
+
+def generate(args):
+    rng = random.Random(args.master_seed)
+    combos = set()
+    jobs = []
+    n_failed_try = 0
+    while len(jobs) < args.n:
+        a = draw_attributes(rng)
+        key = tuple(sorted(a.items()))
+        if args.unique_prompts and key in combos:
+            n_failed_try += 1
+            if n_failed_try > 10000:
+                print("Prompt space exhausted; stopping early.", file=sys.stderr)
+                break
+            continue
+        combos.add(key)
+        seed = rng.randrange(0, 2**31)
+        jobs.append((a, seed))
+
+    if args.nations:
+        jobs = [(a, s) for (a, s) in jobs if a["nation"] in args.nations]
+
+    print(f"{len(jobs)} images queued (random draws, master seed {args.master_seed})")
+
+    done = failed = 0
+    for i, (a, seed) in enumerate(jobs):
+        prefix = prefix_for(a, seed)
+        wf = json.loads(json.dumps(WORKFLOW_TEMPLATE))  # deep copy
+        wf["1"]["inputs"]["ckpt_name"] = CKPT
+        wf["3"]["inputs"]["text"] = build_prompt(a)
+        wf["2"]["inputs"]["seed"] = seed
+        wf["8"]["inputs"]["filename_prefix"] = prefix
+
+        try:
+            queue_and_wait(wf, timeout=args.timeout)
+            done += 1
+        except Exception as e:
+            failed += 1
+            print(f"[FAIL] {prefix}: {e}", file=sys.stderr)
+            if failed > args.max_fails:
+                print("Too many failures, aborting.", file=sys.stderr)
+                break
+        if (i + 1) % 25 == 0:
+            print(f"[{i + 1}/{len(jobs)}] ok={done} fail={failed}")
+    print(f"Done. ok={done} fail={failed}")
+
+    # manifest for the run (reproducible: same master seed -> same draws)
+    with open("run_manifest.jsonl", "a", encoding="utf-8") as f:
+        for a, seed in jobs:
+            f.write(json.dumps({**a, "seed": seed}) + "\n")
+
+# ----------------------------------------------------------------------------
+# Post-process: downscale raw PNG -> game-resolution JPEG
+# ----------------------------------------------------------------------------
+
+def postprocess(args):
+    src = args.output_dir
+    dst = args.game_dir
+    os.makedirs(dst, exist_ok=True)
+    n = 0
+    for name in sorted(os.listdir(src)):
+        if not name.lower().endswith(".png"):
+            continue
+        im = Image.open(os.path.join(src, name)).convert("RGB")
+        im = im.resize((GAME_SIZE, GAME_SIZE), Image.LANCZOS)
+        im.save(os.path.join(dst, name[:-4] + ".jpg"), quality=JPEG_QUALITY)
+        n += 1
+    print(f"Converted {n} images -> {dst}")
+
+# ----------------------------------------------------------------------------
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--n", type=int, default=4800,
+                   help="number of images to generate (random draws)")
+    p.add_argument("--master-seed", type=int, default=1234,
+                   help="seed for the attribute/seed draws (reproducible runs)")
+    p.add_argument("--nations", nargs="*", default=None,
+                   help="subset of: " + " ".join(sorted(NATIONS)))
+    p.add_argument("--no-unique-prompts", dest="unique_prompts",
+                   action="store_false", default=True,
+                   help="allow identical attribute combos (still unique seeds)")
+    p.add_argument("--timeout", type=int, default=600, help="per-image timeout s")
+    p.add_argument("--max-fails", type=int, default=10)
+    p.add_argument("--postprocess", action="store_true",
+                   help="skip generation, only convert output dir")
+    p.add_argument("--output-dir", default=None, help="raw dir for --postprocess")
+    p.add_argument("--game-dir", default=None, help="jpg dir for --postprocess")
+    args = p.parse_args()
+
+    if args.postprocess:
+        out = args.output_dir or "output/wwii_portraits"
+        game = args.game_dir or "game_512"
+        args.output_dir, args.game_dir = out, game
+        postprocess(args)
+    else:
+        generate(args)
+
+if __name__ == "__main__":
+    main()
