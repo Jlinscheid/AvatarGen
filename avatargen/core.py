@@ -11,6 +11,7 @@ import random
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .logging_util import get_logger
@@ -152,7 +153,9 @@ class ComfyClient:
         log.info("fetched %d checkpoints from %s", len(names), self.endpoint)
         return names
 
-    def queue_and_wait(self, wf: dict, timeout: int = 600) -> None:
+    def queue_and_wait(self, wf: dict, timeout: int = 600) -> list[dict]:
+        """Queue a workflow, wait for completion, return saved output images
+        (list of {filename, subfolder, type}) so the app can fetch them."""
         log.debug("queuing workflow: prefix=%s ckpt=%s seed=%s",
                   wf["8"]["inputs"]["filename_prefix"], wf["1"]["inputs"]["ckpt_name"],
                   wf["2"]["inputs"]["seed"])
@@ -195,11 +198,26 @@ class ComfyClient:
                 if hist[pid]["status"].get("status_str") == "error":
                     log.error("ComfyUI reported error for %s", pid)
                     raise RuntimeError(f"ComfyUI error for {pid}")
-                log.info("finished %s in %.1fs", pid, time.time() - t0)
-                return
+                outputs = hist[pid].get("outputs", {}).get("8", {}).get("images", [])
+                log.info("finished %s in %.1fs, outputs=%s", pid, time.time() - t0, outputs)
+                return outputs
             time.sleep(1.0)
         log.error("timeout waiting for %s after %ss", pid, timeout)
         raise TimeoutError(f"Image {pid} timed out")
+
+    def fetch_image(self, out: dict, dest_path: str) -> None:
+        """Download a generated image from ComfyUI (/view) into the app's
+        render dir — ComfyUI saves into its own output folder, which the
+        preview pane cannot read (discovered in first integration test)."""
+        q = urllib.parse.urlencode({
+            "filename": out["filename"], "subfolder": out.get("subfolder", ""),
+            "type": out.get("type", "output")})
+        url = f"{self.endpoint}/view?{q}"
+        with urllib.request.urlopen(url, timeout=60) as r:
+            data = r.read()
+        with open(dest_path, "wb") as f:
+            f.write(data)
+        log.info("fetched %s -> %s (%d bytes)", out["filename"], dest_path, len(data))
 
 
 def slugify(text: str) -> str:

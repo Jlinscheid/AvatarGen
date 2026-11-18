@@ -63,7 +63,13 @@ class RenderWorker(QThread):
                 wf = core.workflow(prompt, negative, draw["seed"],
                                    self.settings["checkpoint"], prefix,
                                    self.settings["width"], self.settings["height"])
-                client.queue_and_wait(wf)
+                outputs = client.queue_and_wait(wf)
+                for out in outputs:
+                    ext = out["filename"].rsplit(".", 1)[-1] if "." in out["filename"] else "png"
+                    client.fetch_image(out, os.path.join(outdir, f"{prefix}.{ext}"))
+                if outputs:
+                    ext = outputs[0]["filename"].rsplit(".", 1)[-1] if "." in outputs[0]["filename"] else "png"
+                    log.info("saved render %s", os.path.join(outdir, prefix + "." + ext))
                 with open(manifest_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(draw) + "\n")
                 done += 1
