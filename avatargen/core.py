@@ -219,14 +219,28 @@ class ComfyClient:
                 for node_out in (hist[pid].get("outputs") or {}).values():
                     outputs.extend(node_out.get("images", []))
                 if not outputs:
-                    # Never treat this as success silently — dump the whole
-                    # history entry so mismatches are diagnosable.
-                    raw = json.dumps(hist[pid])
-                    log.error("prompt %s completed but no images found — "
-                              "history entry: %s", pid, raw[:800])
+                    # Race guard: some ComfyUI builds record completion before
+                    # the outputs dict is populated — wait 2s and re-fetch once.
+                    time.sleep(2.0)
+                    with urllib.request.urlopen(f"{self.endpoint}/history/{pid}",
+                                                timeout=30) as r:
+                        hist = json.loads(r.read())
+                    for node_out in (hist.get(pid, {}).get("outputs") or {}).values():
+                        outputs.extend(node_out.get("images", []))
+                if not outputs:
+                    # Never treat this as success silently. Dump status and
+                    # outputs ONLY — the prompt echo floods the truncation
+                    # budget (seen in integration testing, 13:59:58).
+                    detail = json.dumps({
+                        "status": hist.get(pid, {}).get("status", {}),
+                        "outputs": hist.get(pid, {}).get("outputs", {}),
+                        "elapsed_s": round(time.time() - t0, 2),
+                    })
+                    log.error("prompt %s completed with no images in %.1fs — %s",
+                              pid, time.time() - t0, detail)
                     raise RuntimeError(
                         f"ComfyUI returned no image for {pid} "
-                        f"(history: {raw[:400]})")
+                        f"(elapsed {time.time() - t0:.1f}s; {detail[:500]})")
                 log.info("finished %s in %.1fs, %d image(s)", pid,
                          time.time() - t0, len(outputs))
                 return outputs
