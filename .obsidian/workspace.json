@@ -205,10 +205,21 @@
   },
   "active": "57ef223a3c725a5e",
   "lastOpenFiles": [
+    "avatargen/__pycache__/logging_util.cpython-314.pyc",
+    "avatargen/__pycache__/core.cpython-314.pyc",
+    "avatargen/__pycache__/gui.cpython-314.pyc",
+    "avatargen/__pycache__/__init__.cpython-314.pyc",
+    "avatargen/__pycache__",
+    "requirements.txt",
+    "prototype_screenshot.png",
+    "main.py",
+    "dictionaries.json",
+    "avatargen/logging_util.py",
+    "avatargen/gui.py",
+    "avatargen/core.py",
     "docs/program-spec.md.md",
     "README.md",
     "docs/HANDOFF.md",
-    "docs/PROMPT_POOLS.md",
-    "docs"
+    "docs/PROMPT_POOLS.md"
   ]
 }
