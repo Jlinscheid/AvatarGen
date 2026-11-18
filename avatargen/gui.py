@@ -387,13 +387,18 @@ class TemplateTab(QWidget):
         self.preview.clear()
         outdir = os.path.join(RENDER_DIR, self.template["id"])
         if not os.path.isdir(outdir):
+            self.preview.addItem("(no saved renders yet)")
             return
-        for name in sorted(os.listdir(outdir)):
-            if name.lower().endswith((".png", ".jpg", ".jpeg")):
-                self.preview.addItem(name)
-                icon = QPixmap(os.path.join(outdir, name))
-                if not icon.isNull():
-                    self.preview.item(self.preview.count() - 1).setIcon(icon)
+        files = [name for name in sorted(os.listdir(outdir))
+                 if name.lower().endswith((".png", ".jpg", ".jpeg"))]
+        if not files:
+            self.preview.addItem("(no saved renders yet)")
+            return
+        for name in files:
+            self.preview.addItem(name)
+            icon = QPixmap(os.path.join(outdir, name))
+            if not icon.isNull():
+                self.preview.item(self.preview.count() - 1).setIcon(icon)
 
 
 def _by_id(items):

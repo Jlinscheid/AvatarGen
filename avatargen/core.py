@@ -211,6 +211,16 @@ class ComfyClient:
                     log.error("ComfyUI reported error for %s", pid)
                     raise RuntimeError(f"ComfyUI error for {pid}")
                 outputs = hist[pid].get("outputs", {}).get("8", {}).get("images", [])
+                if not outputs:
+                    # Never treat this as success silently — dump the actual
+                    # structure so mismatches are diagnosable (seen in first
+                    # integration test: image "done" but nothing displayed).
+                    log.error("prompt %s completed but outputs empty/missing — "
+                              "raw outputs: %s", pid,
+                              json.dumps(hist[pid].get("outputs", {})))
+                    raise RuntimeError(
+                        f"ComfyUI returned no image for {pid} "
+                        f"(outputs: {json.dumps(hist[pid].get('outputs', {}))[:400]})")
                 log.info("finished %s in %.1fs, outputs=%s", pid, time.time() - t0, outputs)
                 return outputs
             time.sleep(1.0)
