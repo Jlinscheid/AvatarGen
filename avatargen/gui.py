@@ -75,8 +75,15 @@ class RenderWorker(QThread):
                         break
                     except Exception as e:  # noqa: BLE001
                         if attempt < retries:
-                            log.warning("image %s attempt %d failed (%s); retrying",
-                                        prefix, attempt + 1, e)
+                            # Perturb the seed: an identical workflow would be
+                            # fully cached by ComfyUI (execution_cached on all
+                            # nodes), replaying a dead prior run forever.
+                            wf["2"]["inputs"]["seed"] = (
+                                draw["seed"] + attempt + 1) % (2**31)
+                            log.warning("image %s attempt %d failed (%s); "
+                                        "retrying with seed %d",
+                                        prefix, attempt + 1, e,
+                                        wf["2"]["inputs"]["seed"])
                         else:
                             raise
                 for out in outputs:
