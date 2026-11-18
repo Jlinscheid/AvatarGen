@@ -23,17 +23,17 @@ watermark, text, low quality, swastika, nazi symbols, fishing boat
 
 ## Race vocabulary (D11/D16 — signed off)
 
-| Key | Phrase |
-|---|---|
-| black | a Black man / woman |
-| white | a white (European) man / woman |
-| east_asian | an East Asian man / woman |
-| south_asian | a South Asian man / woman |
-| southeast_asian | a Southeast Asian man / woman |
-| middle_eastern | a Middle Eastern man / woman |
-| latino | a Latino man / Latina woman |
-| central_asian | a Central Asian man / woman |
-| indigenous | an Indigenous man / woman |
+| Key             | Phrase                         |
+| --------------- | ------------------------------ |
+| black           | a Black man / woman            |
+| white           | a white (European) man / woman |
+| east_asian      | an East Asian man / woman      |
+| south_asian     | a South Asian man / woman      |
+| southeast_asian | a Southeast Asian man / woman  |
+| middle_eastern  | a Middle Eastern man / woman   |
+| latino          | a Latino man / Latina woman    |
+| central_asian   | a Central Asian man / woman    |
+| indigenous      | an Indigenous man / woman      |
 
 Attach directly to the subject noun; never append at the end of the prompt.
 
@@ -50,7 +50,7 @@ Attach directly to the subject noun; never append at the end of the prompt.
 
 ## Officers — uniform vocabulary by side/branch/variant (D13/D20/D25)
 
-Structure per side: army/navy/airforce × formal/combat (+ women's formal).
+Structure per side: army/navy/air1force × formal/combat (+ women's formal).
 Heraldry rule (D33): badges are generic shapes only — "a metal cap badge",
 never a motif. Rank is ambiguous (D24): "officer rank insignia" / "rank boards
 on the shoulders" / "rank stripes on the sleeve".

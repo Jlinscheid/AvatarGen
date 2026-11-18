@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "docs/program-spec.md.md",
+                "file": "docs/PROMPT_POOLS.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "program-spec.md"
+              "title": "PROMPT_POOLS"
             }
           }
         ],
@@ -203,10 +203,12 @@
       "bases:Create new base": false
     }
   },
-  "active": "19207ea436c7271b",
+  "active": "57ef223a3c725a5e",
   "lastOpenFiles": [
-    "README.md",
     "docs/program-spec.md.md",
+    "README.md",
+    "docs/HANDOFF.md",
+    "docs/PROMPT_POOLS.md",
     "docs"
   ]
 }
