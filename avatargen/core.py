@@ -189,9 +189,21 @@ class ComfyClient:
             raise
         log.info("queued %s as %s", wf["8"]["inputs"]["filename_prefix"], pid)
         t0 = time.time()
+        last_status = ""
         while time.time() - t0 < timeout:
+            # every 30s log queue state (running/pending) so stalls are visible
             if (time.time() - t0) % 30 < 1.5:
-                log.debug("waiting on %s (%.0fs elapsed)", pid, time.time() - t0)
+                try:
+                    with urllib.request.urlopen(f"{self.endpoint}/queue", timeout=10) as r:
+                        q = json.loads(r.read())
+                    running = any(e[1] == pid for e in q.get("queue_running", []))
+                    pending = any(e[1] == pid for e in q.get("queue_pending", []))
+                    state = "running" if running else ("pending" if pending else "NOT IN QUEUE")
+                    if state != last_status:
+                        log.info("%s state: %s (%.0fs elapsed)", pid, state, time.time() - t0)
+                        last_status = state
+                except Exception as e:  # noqa: BLE001 — queue probe is best-effort
+                    log.debug("queue probe failed: %s", e)
             with urllib.request.urlopen(f"{self.endpoint}/history/{pid}", timeout=30) as r:
                 hist = json.loads(r.read())
             if pid in hist and hist[pid].get("status", {}).get("completed"):

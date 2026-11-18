@@ -44,8 +44,11 @@ class RenderWorker(QThread):
 
     def run(self):
         n = self.settings["count"]
-        log.info("batch start: template=%s count=%d seed=%d endpoint=%s",
-                 self.template["id"], n, self.settings["seed"], self.settings["endpoint"])
+        timeout = self.settings.get("timeout", 600)
+        retries = self.settings.get("retries", 2)
+        log.info("batch start: template=%s count=%d seed=%d endpoint=%s timeout=%ss retries=%d",
+                 self.template["id"], n, self.settings["seed"], self.settings["endpoint"],
+                 timeout, retries)
         client = core.ComfyClient(self.settings["endpoint"], self.settings["checkpoint"])
         rng = random.Random(self.settings["seed"])
         outdir = os.path.join(RENDER_DIR, self.template["id"])
@@ -63,7 +66,19 @@ class RenderWorker(QThread):
                 wf = core.workflow(prompt, negative, draw["seed"],
                                    self.settings["checkpoint"], prefix,
                                    self.settings["width"], self.settings["height"])
-                outputs = client.queue_and_wait(wf)
+                outputs = None
+                for attempt in range(1 + retries):
+                    if self._abort:
+                        break
+                    try:
+                        outputs = client.queue_and_wait(wf, timeout=timeout)
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        if attempt < retries:
+                            log.warning("image %s attempt %d failed (%s); retrying",
+                                        prefix, attempt + 1, e)
+                        else:
+                            raise
                 for out in outputs:
                     ext = out["filename"].rsplit(".", 1)[-1] if "." in out["filename"] else "png"
                     client.fetch_image(out, os.path.join(outdir, f"{prefix}.{ext}"))
@@ -138,6 +153,13 @@ class SettingsDialog(QDialog):
         self.quality = QSpinBox(); self.quality.setRange(1, 100); self.quality.setValue(settings["quality"])
         form.addRow("JPEG quality", self.quality)
 
+        self.timeout = QSpinBox(); self.timeout.setRange(60, 7200); self.timeout.setValue(settings.get("timeout", 600))
+        self.timeout.setSuffix(" s")
+        form.addRow("Per-image timeout", self.timeout)
+
+        self.retries = QSpinBox(); self.retries.setRange(0, 10); self.retries.setValue(settings.get("retries", 2))
+        form.addRow("Per-image retries", self.retries)
+
         pp = QLineEdit()
         pp.setPlaceholderText("reserved — post-processing pipeline (future)")
         pp.setEnabled(False)
@@ -178,6 +200,7 @@ class SettingsDialog(QDialog):
             "output_dir": self.outdir.text().strip(),
             "width": self.width.value(), "height": self.height.value(),
             "quality": self.quality.value(),
+            "timeout": self.timeout.value(), "retries": self.retries.value(),
         })
         super().accept()
 
@@ -479,6 +502,7 @@ DEFAULT_SETTINGS = {
     "count_default": 10,
     "output_dir": RENDER_DIR,
     "width": 1024, "height": 1024, "quality": 85,
+    "timeout": 600, "retries": 2,
 }
 
 
