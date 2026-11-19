@@ -58,7 +58,10 @@ def build_prompt(template: dict, dicts: dict, rng: random.Random) -> tuple[str, 
 
     subject = subjects[template["subject_type"]]
     side = sides[template["side"]]
-    comp = comps[template["composition"]]
+    comp_ids = template["composition"]
+    if isinstance(comp_ids, str):  # legacy single-select template
+        comp_ids = [comp_ids]
+    comp = comps[rng.choice(comp_ids)]
 
     sex = rng.choice(template["sex"])
     uniform_id = rng.choice(template["uniforms"])
@@ -339,7 +342,8 @@ _LEGACY_SUBJECT_WORDS = {
 def migrate_project(project: dict) -> dict:
     """Bring older project files up to the current dictionary schema in place:
     subject types gain prompt_word/prompt_word_female/military; uniform and
-    composition applies_to lists are pruned to known subject ids."""
+    composition applies_to lists are pruned to known subject ids; template
+    composition becomes a list (multi-select, Nov 18 2026)."""
     sts = project.get("dictionaries", {}).get("subject_types", [])
     for st in sts:
         if "prompt_word" not in st:
@@ -353,6 +357,9 @@ def migrate_project(project: dict) -> dict:
         for e in project.get("dictionaries", {}).get(key, []):
             e["applies_to"] = ([s for s in e.get("applies_to", []) if s in ids]
                                or sorted(ids))
+    for t in project.get("templates", []):
+        if isinstance(t.get("composition"), str):
+            t["composition"] = [t["composition"]]
     return project
 
 

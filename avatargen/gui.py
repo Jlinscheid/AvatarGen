@@ -8,10 +8,10 @@ import random
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-    QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox,
+    QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import core
@@ -252,6 +252,7 @@ class DictEditor(QWidget):
         rm = QPushButton("Delete"); rm.clicked.connect(self.delete)
         btns.addWidget(add); btns.addWidget(rm)
         left.addLayout(btns)
+        left.addStretch(1)  # pin entry list to top-left on resize (D50)
         root.addLayout(left, 1)
 
         form = QVBoxLayout()
@@ -355,7 +356,7 @@ class DictEditor(QWidget):
         entries.append(entry)
         log.info("dictionary %s: added entry %s", self.key, entry["id"])
         self.populate(select_id=entry["id"])
-        self.on_change()
+        self.on_change(self)
 
     def delete(self):
         e = self._current()
@@ -369,7 +370,7 @@ class DictEditor(QWidget):
         self.dicts[self.key][:] = [x for x in self._entries() if x["id"] != e["id"]]
         log.info("dictionary %s: deleted entry %s", self.key, e["id"])
         self.populate()
-        self.on_change()
+        self.on_change(self)
 
     def apply(self):
         e = self._current()
@@ -385,7 +386,7 @@ class DictEditor(QWidget):
             e["applies_to"] = [sid for sid, cb in self.applies.items() if cb.isChecked()]
         log.info("dictionary %s: updated entry %s", self.key, e["id"])
         self.populate(select_id=e["id"])
-        self.on_change()
+        self.on_change(self)
 
 
 class TemplateTab(QWidget):
@@ -452,11 +453,17 @@ class TemplateTab(QWidget):
         self.ethnicity.setLayout(eg)
         opts.addWidget(self.ethnicity, 4, 0, 1, 2)
 
-        self.composition = QComboBox()
-        for c in dicts["compositions"]:
-            self.composition.addItem(c["display_name"], c["id"])
-        self.composition.setCurrentIndex(max(0, self.composition.findData(template["composition"])))
-        opts.addWidget(QLabel("Composition"), 5, 0); opts.addWidget(self.composition, 5, 1)
+        self.composition = QGroupBox("Compositions (multiselect)")
+        cg = QGridLayout()
+        self.comp_checks = {}
+        for i, c in enumerate(dicts["compositions"]):
+            cb = QCheckBox(c["display_name"])
+            cb.setChecked(c["id"] in template["composition"])
+            cb.stateChanged.connect(self.sync)
+            cg.addWidget(cb, i // 2, i % 2)
+            self.comp_checks[c["id"]] = cb
+        self.composition.setLayout(cg)
+        opts.addWidget(self.composition, 5, 0, 1, 2)
 
         self.uniforms = QGroupBox("Uniforms (multiselect)")
         ug = QGridLayout()
@@ -487,17 +494,25 @@ class TemplateTab(QWidget):
         run_row.addWidget(self.progress)
         left.addLayout(run_row)
         self.check_count()
+        left.addStretch(1)  # pin contents to top-left on resize (D50)
 
-        # Preview pane: saved renders for this template (D39 #4) + delete (D48)
+        # Preview pane: saved renders (D39 #4), multi-select delete (D48)
         pv = QVBoxLayout()
         self.preview = QListWidget()
         self.preview.setViewMode(QListWidget.IconMode)
+        self.preview.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.preview.setIconSize(QPixmap(96, 96).size())
         self.preview.setFixedWidth(260)
         pv.addWidget(self.preview)
+        sel_row = QHBoxLayout()
+        sel_all = QPushButton("Select all")
+        sel_all.clicked.connect(self.preview.selectAll)
         self.del_btn = QPushButton("Delete selected")
         self.del_btn.clicked.connect(self.delete_selected)
-        pv.addWidget(self.del_btn)
+        sel_row.addWidget(sel_all)
+        sel_row.addWidget(self.del_btn)
+        pv.addLayout(sel_row)
+        pv.addStretch(1)  # pin preview column to top-left on resize (D50)
         root.addLayout(pv)
         self.refresh_preview()
 
@@ -513,7 +528,8 @@ class TemplateTab(QWidget):
         t["age_low"] = min(self.age_low.value(), self.age_high.value() - 1)
         t["age_high"] = max(self.age_high.value(), self.age_low.value() + 1)
         t["ethnicity"] = [e for e, cb in self.eth_checks.items() if cb.isChecked()] or ["white"]
-        t["composition"] = self.composition.currentData()
+        t["composition"] = [c for c, cb in self.comp_checks.items() if cb.isChecked()] \
+            or list(self.comp_checks)[:1]
         t["uniforms"] = [u for u, cb in self.uni_checks.items() if cb.isChecked()]
 
     def on_subject_change(self):
@@ -593,20 +609,22 @@ class TemplateTab(QWidget):
                 self.preview.item(self.preview.count() - 1).setIcon(icon)
 
     def delete_selected(self):
-        """Delete the selected render file; manifest row kept but marked (D48)."""
-        item = self.preview.currentItem()
-        if not item or item.text().startswith("("):
+        """Delete the selected render(s); manifest rows kept but marked (D48)."""
+        names = [it.text() for it in self.preview.selectedItems()
+                 if not it.text().startswith("(")]
+        if not names:
             return
-        name = item.text()
+        if QMessageBox.question(
+                self, "Delete photos",
+                f"Delete {len(names)} photo(s)?") != QMessageBox.Yes:
+            return
         outdir = os.path.join(RENDER_DIR, self.template["id"])
-        path = os.path.join(outdir, name)
-        if QMessageBox.question(self, "Delete photo",
-                                f"Delete {name}?") != QMessageBox.Yes:
-            return
-        if os.path.isfile(path):
-            os.remove(path)
-            core.mark_deleted(outdir, name)
-            log.info("deleted render %s (manifest row marked)", path)
+        for name in names:
+            path = os.path.join(outdir, name)
+            if os.path.isfile(path):
+                os.remove(path)
+                core.mark_deleted(outdir, name)
+                log.info("deleted render %s (manifest row marked)", path)
         self.refresh_preview()
 
 
@@ -697,8 +715,10 @@ class MainWindow(QMainWindow):
             t["subject_type"] = subject_ids[0]
         if t.get("side") not in side_ids and side_ids:
             t["side"] = side_ids[0]
-        if t.get("composition") not in comp_ids and comp_ids:
-            t["composition"] = comp_ids[0]
+        comp = t.get("composition")
+        if isinstance(comp, str):  # legacy single-select
+            comp = [comp]
+        t["composition"] = [c for c in comp if c in comp_ids] or comp_ids[:1]
         t["ethnicity"] = [e for e in t.get("ethnicity", []) if e in eth_ids] \
             or eth_ids[:1]
         t["uniforms"] = [u for u in t.get("uniforms", []) if u in unis]
@@ -707,11 +727,13 @@ class MainWindow(QMainWindow):
                        if t.get("subject_type") in u.get("applies_to", [])]
             t["uniforms"] = (fitting or list(unis))[:1]
 
-    def on_dicts_changed(self):
-        """Dictionary edits: sanitize all templates, rebuild ALL tabs —
-        subject-type edits change the applies_to checkbox lists in the
-        uniform/composition editors, so those must be rebuilt too."""
-        log.info("dictionaries changed; rebuilding tabs")
+    def on_dicts_changed(self, source_editor=None):
+        """Dictionary edits (D47). Sanitize templates and rebuild the template
+        tab. The editing editor is NOT rebuilt, so the user stays in it. Other
+        dictionary editors are rebuilt only when subject types changed (their
+        applies_to checkbox lists depend on it)."""
+        log.info("dictionaries changed (%s); rebuilding",
+                 source_editor.key if source_editor else "external")
         self.tab.sync()
         for t in self.project["templates"]:
             self._sanitize_template(t)
@@ -721,11 +743,15 @@ class MainWindow(QMainWindow):
         self.tab = TemplateTab(old, self.dicts, self.settings)
         self.tabs.removeTab(0)
         self.tabs.insertTab(0, self.tab, old.get("title", "Template"))
-        while self.dict_tabs.count():
-            self.dict_tabs.removeTab(0)
-        for key, spec in DICT_SPECS.items():
-            self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
-                                  spec["label"])
+        if source_editor is None or source_editor.key == "subject_types":
+            while self.dict_tabs.count():
+                self.dict_tabs.removeTab(0)
+            for key, spec in DICT_SPECS.items():
+                if source_editor is not None and key == source_editor.key:
+                    w = source_editor  # keep the editor the user is working in
+                else:
+                    w = DictEditor(key, self.dicts, self.on_dicts_changed)
+                self.dict_tabs.addTab(w, spec["label"])
         self.tabs.setCurrentIndex(0)
         self._mark_dirty()
 
@@ -800,7 +826,7 @@ class MainWindow(QMainWindow):
             "sex": ["male", "female"],
             "age_low": 30, "age_high": 60,
             "ethnicity": [e["id"] for e in dicts["ethnicities"]],
-            "composition": dicts["compositions"][0]["id"],
+            "composition": [dicts["compositions"][0]["id"]],
             "uniforms": [u["id"] for u in dicts["uniforms"][:1]],
             "style_core_injection": "",
             "negative_injection": "",
@@ -864,7 +890,7 @@ def default_template(dicts):
         "sex": ["male", "female"],
         "age_low": 30, "age_high": 60,
         "ethnicity": [e["id"] for e in dicts["ethnicities"]],
-        "composition": "formal_portrait",
+        "composition": ["formal_portrait"],
         "uniforms": ["service_dress", "field_uniform"],
         "style_core_injection": "",
         "negative_injection": "",
