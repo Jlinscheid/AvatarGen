@@ -214,12 +214,18 @@ class SettingsDialog(QDialog):
 
 
 DICT_SPECS = {
+    "subject_types": {"label": "Subject Type", "text_field": "prompt_word",
+                      "text_label": "Prompt word (male / neutral)",
+                      "extra_text_fields": [("prompt_word_female",
+                                             "Prompt word (female, optional)")],
+                      "bool_fields": [("military",
+                                       "Military (officer insignia & branch word)")]},
     "sides": {"label": "Side / Nation", "text_field": "flavor",
               "text_label": "Flavor (prompt vocabulary)"},
     "uniforms": {"label": "Uniform", "text_field": "prompt_text",
                  "text_label": "Uniform prompt text", "applies_to": True},
     "compositions": {"label": "Composition", "text_field": "prompt_text",
-                     "text_label": "Composition prompt text"},
+                     "text_label": "Composition prompt text", "applies_to": True},
     "ethnicities": {"label": "Ethnicity", "text_field": "prompt",
                     "text_label": "Prompt descriptor"},
 }
@@ -256,16 +262,27 @@ class DictEditor(QWidget):
         self.text_edit = QPlainTextEdit()
         self.text_edit.setFixedHeight(90)
         form.addWidget(self.text_edit)
+        self.extra_edits = {}
+        for key, label in self.spec.get("extra_text_fields", []):
+            form.addWidget(QLabel(label))
+            w = QLineEdit()
+            form.addWidget(w)
+            self.extra_edits[key] = w
+        self.bool_checks = {}
+        for key, label in self.spec.get("bool_fields", []):
+            cb = QCheckBox(label)
+            form.addWidget(cb)
+            self.bool_checks[key] = cb
         if self.spec.get("applies_to"):
             self.applies = {}
-            box = QGroupBox("Applies to subject types")
+            self.applies_box = QGroupBox("Applies to subject types")
             ag = QGridLayout()
             for i, st in enumerate(dicts["subject_types"]):
                 cb = QCheckBox(st["display_name"])
                 ag.addWidget(cb, i // 3, i % 3)
                 self.applies[st["id"]] = cb
-            box.setLayout(ag)
-            form.addWidget(box)
+            self.applies_box.setLayout(ag)
+            form.addWidget(self.applies_box)
         apply_btn = QPushButton("Apply changes")
         apply_btn.clicked.connect(self.apply)
         form.addWidget(apply_btn)
@@ -306,6 +323,10 @@ class DictEditor(QWidget):
             return self._clear_fields()
         self.name_edit.setText(e["display_name"])
         self.text_edit.setPlainText(e.get(self.spec["text_field"], ""))
+        for key, w in self.extra_edits.items():
+            w.setText(e.get(key, ""))
+        for key, cb in self.bool_checks.items():
+            cb.setChecked(bool(e.get(key)))
         if self.spec.get("applies_to"):
             for sid, cb in self.applies.items():
                 cb.setChecked(sid in e.get("applies_to", []))
@@ -313,6 +334,10 @@ class DictEditor(QWidget):
     def _clear_fields(self):
         self.name_edit.clear()
         self.text_edit.clear()
+        for w in self.extra_edits.values():
+            w.clear()
+        for cb in self.bool_checks.values():
+            cb.setChecked(False)
 
     def add(self):
         entries = self._entries()
@@ -323,6 +348,10 @@ class DictEditor(QWidget):
         if "applies_to" in self.spec:
             entry["applies_to"] = [s["id"] for s in self.dicts["subject_types"]]
         entry[self.spec["text_field"]] = ""
+        for key, _ in self.spec.get("extra_text_fields", []):
+            entry[key] = ""
+        for key, _ in self.spec.get("bool_fields", []):
+            entry[key] = False
         entries.append(entry)
         log.info("dictionary %s: added entry %s", self.key, entry["id"])
         self.populate(select_id=entry["id"])
@@ -348,6 +377,10 @@ class DictEditor(QWidget):
             return
         e["display_name"] = self.name_edit.text().strip() or e["display_name"]
         e[self.spec["text_field"]] = self.text_edit.toPlainText()
+        for key, w in self.extra_edits.items():
+            e[key] = w.text().strip()
+        for key, cb in self.bool_checks.items():
+            e[key] = cb.isChecked()
         if self.spec.get("applies_to"):
             e["applies_to"] = [sid for sid, cb in self.applies.items() if cb.isChecked()]
         log.info("dictionary %s: updated entry %s", self.key, e["id"])
@@ -495,6 +528,10 @@ class TemplateTab(QWidget):
         if not any(cb.isChecked() for cb in self.uni_checks.values() if cb.isVisible()):
             first = next((uid for uid, u in unis.items()
                           if subject in u["applies_to"]), None)
+            if first is None and unis:
+                # New subject types may have no fitting uniform yet — fall
+                # back to the first entry rather than leaving none selected.
+                first = next(iter(unis))
             if first:
                 self.uni_checks[first].setChecked(True)
 
@@ -651,10 +688,13 @@ class MainWindow(QMainWindow):
     def _sanitize_template(self, t: dict):
         """Fix dangling dictionary references after edits/deletes (D47)."""
         d = self.dicts
+        subject_ids = [s["id"] for s in d["subject_types"]]
         side_ids = [s["id"] for s in d["sides"]]
         comp_ids = [c["id"] for c in d["compositions"]]
         eth_ids = [e["id"] for e in d["ethnicities"]]
         unis = {u["id"]: u for u in d["uniforms"]}
+        if t.get("subject_type") not in subject_ids and subject_ids:
+            t["subject_type"] = subject_ids[0]
         if t.get("side") not in side_ids and side_ids:
             t["side"] = side_ids[0]
         if t.get("composition") not in comp_ids and comp_ids:
@@ -668,8 +708,10 @@ class MainWindow(QMainWindow):
             t["uniforms"] = (fitting or list(unis))[:1]
 
     def on_dicts_changed(self):
-        """Dictionary edits: sanitize all templates, rebuild the template tab."""
-        log.info("dictionaries changed; rebuilding template tab")
+        """Dictionary edits: sanitize all templates, rebuild ALL tabs —
+        subject-type edits change the applies_to checkbox lists in the
+        uniform/composition editors, so those must be rebuilt too."""
+        log.info("dictionaries changed; rebuilding tabs")
         self.tab.sync()
         for t in self.project["templates"]:
             self._sanitize_template(t)
@@ -679,6 +721,11 @@ class MainWindow(QMainWindow):
         self.tab = TemplateTab(old, self.dicts, self.settings)
         self.tabs.removeTab(0)
         self.tabs.insertTab(0, self.tab, old.get("title", "Template"))
+        while self.dict_tabs.count():
+            self.dict_tabs.removeTab(0)
+        for key, spec in DICT_SPECS.items():
+            self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
+                                  spec["label"])
         self.tabs.setCurrentIndex(0)
         self._mark_dirty()
 
@@ -829,6 +876,7 @@ def load_or_create_project() -> dict:
     if os.path.isfile(PROJECT_PATH):
         try:
             project = core.load_project(PROJECT_PATH)
+            project = core.migrate_project(project)
             log.info("project loaded: %s (%d templates)", PROJECT_PATH,
                      len(project["templates"]))
             return project

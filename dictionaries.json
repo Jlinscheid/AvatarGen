@@ -8,12 +8,18 @@
     {"id": "thuleheim", "display_name": "Thuleheim", "flavor": "Baltic, heavy coats, fur-collared field wear"}
   ],
   "subject_types": [
-    {"id": "politician", "display_name": "Politician", "military": false},
-    {"id": "industrialist", "display_name": "Industrialist", "military": false},
-    {"id": "scientist", "display_name": "Scientist", "military": false},
-    {"id": "army_officer", "display_name": "Army Officer", "military": true},
-    {"id": "air_force_officer", "display_name": "Air Force Officer", "military": true},
-    {"id": "naval_officer", "display_name": "Naval Officer", "military": true}
+    {"id": "politician", "display_name": "Politician", "military": false,
+     "prompt_word": "statesman", "prompt_word_female": "stateswoman"},
+    {"id": "industrialist", "display_name": "Industrialist", "military": false,
+     "prompt_word": "businessman", "prompt_word_female": "businesswoman"},
+    {"id": "scientist", "display_name": "Scientist", "military": false,
+     "prompt_word": "scientist", "prompt_word_female": "scientist"},
+    {"id": "army_officer", "display_name": "Army Officer", "military": true,
+     "prompt_word": "officer", "prompt_word_female": "officer"},
+    {"id": "air_force_officer", "display_name": "Air Force Officer", "military": true,
+     "prompt_word": "officer", "prompt_word_female": "officer"},
+    {"id": "naval_officer", "display_name": "Naval Officer", "military": true,
+     "prompt_word": "officer", "prompt_word_female": "officer"}
   ],
   "ethnicities": [
     {"id": "black", "display_name": "Black", "prompt": "a Black"},

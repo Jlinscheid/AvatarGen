@@ -64,19 +64,21 @@ def build_prompt(template: dict, dicts: dict, rng: random.Random) -> tuple[str, 
     uniform_id = rng.choice(template["uniforms"])
     uniform = unis[uniform_id]
     if subject["id"] not in uniform["applies_to"]:
-        raise ValueError(f"uniform {uniform_id} does not apply to {subject['id']}")
+        # Advisory only: new subject types may briefly use a uniform not yet
+        # marked as applying to them. UI gating keeps this rare.
+        log.warning("uniform %s is not marked as applying to %s — using it anyway",
+                    uniform_id, subject["id"])
     eth = rng.choice(template["ethnicity"])
     age = rng.randint(template["age_low"], template["age_high"])
 
-    sex_word = {"politician": "statesman", "industrialist": "businessman",
-                "scientist": "scientist", "army_officer": "officer",
-                "air_force_officer": "officer", "naval_officer": "officer"}[subject["id"]]
-    if sex == "female":
-        sex_word = {"politician": "stateswoman", "industrialist": "businesswoman",
-                    "scientist": "scientist", "army_officer": "officer",
-                    "air_force_officer": "officer", "naval_officer": "officer"}[subject["id"]]
+    # Prompt word comes from the (user-editable) subject-type entry, not a
+    # hardcoded map — new subject types must render without code changes.
+    if sex == "female" and subject.get("prompt_word_female"):
+        sex_word = subject["prompt_word_female"]
+    else:
+        sex_word = subject.get("prompt_word") or subject["id"]
 
-    insignia = INSIGNIA_OFFICER if subject["military"] else INSIGNIA_CIVILIAN
+    insignia = INSIGNIA_OFFICER if subject.get("military") else INSIGNIA_CIVILIAN
 
     parts = [STYLE_CORE]
     if template.get("style_core_injection"):
@@ -319,6 +321,38 @@ def load_project(path: str) -> dict:
     for key in ("dictionaries", "templates"):
         if key not in project:
             raise ValueError(f"Project file {path} missing '{key}'")
+    return project
+
+
+# Legacy prompt words for project files saved before subject types gained
+# prompt_word fields (migration, Nov 18 2026).
+_LEGACY_SUBJECT_WORDS = {
+    "politician": ("statesman", "stateswoman"),
+    "industrialist": ("businessman", "businesswoman"),
+    "scientist": ("scientist", "scientist"),
+    "army_officer": ("officer", "officer"),
+    "air_force_officer": ("officer", "officer"),
+    "naval_officer": ("officer", "officer"),
+}
+
+
+def migrate_project(project: dict) -> dict:
+    """Bring older project files up to the current dictionary schema in place:
+    subject types gain prompt_word/prompt_word_female/military; uniform and
+    composition applies_to lists are pruned to known subject ids."""
+    sts = project.get("dictionaries", {}).get("subject_types", [])
+    for st in sts:
+        if "prompt_word" not in st:
+            male, female = _LEGACY_SUBJECT_WORDS.get(
+                st["id"], (st["id"], st["id"]))
+            st["prompt_word"] = male
+            st["prompt_word_female"] = female
+        st.setdefault("military", st["id"].endswith("_officer"))
+    ids = {s["id"] for s in sts}
+    for key in ("uniforms", "compositions"):
+        for e in project.get("dictionaries", {}).get(key, []):
+            e["applies_to"] = ([s for s in e.get("applies_to", []) if s in ids]
+                               or sorted(ids))
     return project
 
 
