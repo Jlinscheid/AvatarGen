@@ -290,3 +290,58 @@ def list_templates(base: str) -> list[str]:
     if not os.path.isdir(d):
         return []
     return sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".json"))
+
+
+# --- project file (D46): one file holds dictionaries + all templates --------
+PROJECT_VERSION = 2
+
+def default_project(dicts: dict) -> dict:
+    return {
+        "schema_version": PROJECT_VERSION,
+        "dictionaries": dicts,
+        "templates": [],
+    }
+
+
+def save_project(path: str, project: dict) -> str:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(project, f, indent=2)
+    return path
+
+
+def load_project(path: str) -> dict:
+    with open(path, encoding="utf-8") as f:
+        project = json.load(f)
+    if project.get("schema_version") != PROJECT_VERSION:
+        raise ValueError(f"Unsupported project schema_version "
+                         f"{project.get('schema_version')!r} in {path}")
+    for key in ("dictionaries", "templates"):
+        if key not in project:
+            raise ValueError(f"Project file {path} missing '{key}'")
+    return project
+
+
+def mark_deleted(outdir: str, filename: str) -> None:
+    """Mark the manifest row(s) for a deleted render (D48: keep history)."""
+    manifest = os.path.join(outdir, "manifest.jsonl")
+    if not os.path.isfile(manifest):
+        return
+    seed_token = filename.rsplit("_", 1)[-1].split(".")[0]  # '<seed:010d>'
+    rows = []
+    with open(manifest, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(row.get("seed")) == seed_token.lstrip("0") or \
+                    str(row.get("seed")).zfill(10) == seed_token:
+                row["deleted"] = True
+            rows.append(row)
+    with open(manifest, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")

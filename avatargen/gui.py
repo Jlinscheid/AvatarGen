@@ -23,6 +23,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DICTS = os.path.join(APP_DIR, "dictionaries.json")
 DEFAULT_USER_DIR = os.path.join(APP_DIR, "userdata")
 RENDER_DIR = os.path.join(DEFAULT_USER_DIR, "renders")
+PROJECT_PATH = os.path.join(DEFAULT_USER_DIR, "project.json")
 
 
 class RenderWorker(QThread):
@@ -212,6 +213,148 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
+DICT_SPECS = {
+    "sides": {"label": "Side / Nation", "text_field": "flavor",
+              "text_label": "Flavor (prompt vocabulary)"},
+    "uniforms": {"label": "Uniform", "text_field": "prompt_text",
+                 "text_label": "Uniform prompt text", "applies_to": True},
+    "compositions": {"label": "Composition", "text_field": "prompt_text",
+                     "text_label": "Composition prompt text"},
+    "ethnicities": {"label": "Ethnicity", "text_field": "prompt",
+                    "text_label": "Prompt descriptor"},
+}
+
+
+class DictEditor(QWidget):
+    """Add/delete/edit entries of one dictionary (D47); edits propagate to
+    template dropdowns via the on_change callback."""
+
+    def __init__(self, key: str, dicts: dict, on_change, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.spec = DICT_SPECS[key]
+        self.dicts = dicts
+        self.on_change = on_change
+
+        root = QHBoxLayout(self)
+        left = QVBoxLayout()
+        self.listw = QListWidget()
+        self.listw.currentItemChanged.connect(self.on_select)
+        left.addWidget(self.listw)
+        btns = QHBoxLayout()
+        add = QPushButton("Add"); add.clicked.connect(self.add)
+        rm = QPushButton("Delete"); rm.clicked.connect(self.delete)
+        btns.addWidget(add); btns.addWidget(rm)
+        left.addLayout(btns)
+        root.addLayout(left, 1)
+
+        form = QVBoxLayout()
+        form.addWidget(QLabel("Display name"))
+        self.name_edit = QLineEdit()
+        form.addWidget(self.name_edit)
+        form.addWidget(QLabel(self.spec["text_label"]))
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setFixedHeight(90)
+        form.addWidget(self.text_edit)
+        if self.spec.get("applies_to"):
+            self.applies = {}
+            box = QGroupBox("Applies to subject types")
+            ag = QGridLayout()
+            for i, st in enumerate(dicts["subject_types"]):
+                cb = QCheckBox(st["display_name"])
+                ag.addWidget(cb, i // 3, i % 3)
+                self.applies[st["id"]] = cb
+            box.setLayout(ag)
+            form.addWidget(box)
+        apply_btn = QPushButton("Apply changes")
+        apply_btn.clicked.connect(self.apply)
+        form.addWidget(apply_btn)
+        form.addStretch(1)
+        root.addLayout(form, 2)
+        self.populate()
+
+    def _entries(self):
+        return self.dicts[self.key]
+
+    def populate(self, select_id=None):
+        self.listw.blockSignals(True)
+        self.listw.clear()
+        for e in self._entries():
+            self.listw.addItem(e["display_name"])
+            self.listw.item(self.listw.count() - 1).setData(Qt.UserRole, e["id"])
+        self.listw.blockSignals(False)
+        if select_id:
+            for i in range(self.listw.count()):
+                if self.listw.item(i).data(Qt.UserRole) == select_id:
+                    self.listw.setCurrentRow(i)
+                    return
+        if self.listw.count():
+            self.listw.setCurrentRow(0)
+        else:
+            self._clear_fields()
+
+    def _current(self):
+        item = self.listw.currentItem()
+        if not item:
+            return None
+        eid = item.data(Qt.UserRole)
+        return next((e for e in self._entries() if e["id"] == eid), None)
+
+    def on_select(self, *_):
+        e = self._current()
+        if not e:
+            return self._clear_fields()
+        self.name_edit.setText(e["display_name"])
+        self.text_edit.setPlainText(e.get(self.spec["text_field"], ""))
+        if self.spec.get("applies_to"):
+            for sid, cb in self.applies.items():
+                cb.setChecked(sid in e.get("applies_to", []))
+
+    def _clear_fields(self):
+        self.name_edit.clear()
+        self.text_edit.clear()
+
+    def add(self):
+        entries = self._entries()
+        n = 1
+        while f"new-{n}" in {e["id"] for e in entries}:
+            n += 1
+        entry = {"id": f"new-{n}", "display_name": f"New {self.spec['label']} {n}"}
+        if "applies_to" in self.spec:
+            entry["applies_to"] = [s["id"] for s in self.dicts["subject_types"]]
+        entry[self.spec["text_field"]] = ""
+        entries.append(entry)
+        log.info("dictionary %s: added entry %s", self.key, entry["id"])
+        self.populate(select_id=entry["id"])
+        self.on_change()
+
+    def delete(self):
+        e = self._current()
+        if not e:
+            return
+        if QMessageBox.question(
+                self, "Delete entry",
+                f"Delete '{e['display_name']}' from {self.spec['label']}?") \
+                != QMessageBox.Yes:
+            return
+        self.dicts[self.key][:] = [x for x in self._entries() if x["id"] != e["id"]]
+        log.info("dictionary %s: deleted entry %s", self.key, e["id"])
+        self.populate()
+        self.on_change()
+
+    def apply(self):
+        e = self._current()
+        if not e:
+            return
+        e["display_name"] = self.name_edit.text().strip() or e["display_name"]
+        e[self.spec["text_field"]] = self.text_edit.toPlainText()
+        if self.spec.get("applies_to"):
+            e["applies_to"] = [sid for sid, cb in self.applies.items() if cb.isChecked()]
+        log.info("dictionary %s: updated entry %s", self.key, e["id"])
+        self.populate(select_id=e["id"])
+        self.on_change()
+
+
 class TemplateTab(QWidget):
     """One template: description + options (D36/D37 fields)."""
 
@@ -312,12 +455,17 @@ class TemplateTab(QWidget):
         left.addLayout(run_row)
         self.check_count()
 
-        # Preview pane: saved renders for this template (D39 #4)
+        # Preview pane: saved renders for this template (D39 #4) + delete (D48)
+        pv = QVBoxLayout()
         self.preview = QListWidget()
         self.preview.setViewMode(QListWidget.IconMode)
         self.preview.setIconSize(QPixmap(96, 96).size())
         self.preview.setFixedWidth(260)
-        root.addWidget(self.preview)
+        pv.addWidget(self.preview)
+        self.del_btn = QPushButton("Delete selected")
+        self.del_btn.clicked.connect(self.delete_selected)
+        pv.addWidget(self.del_btn)
+        root.addLayout(pv)
         self.refresh_preview()
 
         self.on_subject_change()
@@ -407,33 +555,55 @@ class TemplateTab(QWidget):
             if not icon.isNull():
                 self.preview.item(self.preview.count() - 1).setIcon(icon)
 
+    def delete_selected(self):
+        """Delete the selected render file; manifest row kept but marked (D48)."""
+        item = self.preview.currentItem()
+        if not item or item.text().startswith("("):
+            return
+        name = item.text()
+        outdir = os.path.join(RENDER_DIR, self.template["id"])
+        path = os.path.join(outdir, name)
+        if QMessageBox.question(self, "Delete photo",
+                                f"Delete {name}?") != QMessageBox.Yes:
+            return
+        if os.path.isfile(path):
+            os.remove(path)
+            core.mark_deleted(outdir, name)
+            log.info("deleted render %s (manifest row marked)", path)
+        self.refresh_preview()
+
 
 def _by_id(items):
     return {i["id"]: i for i in items}
 
 
 class MainWindow(QMainWindow):
-    """Main window (D39): menu bar, template tabs, preview, RUN/ABORT."""
+    """Main window (D39 + D46/D47/D48): project file, template tab,
+    dictionary editor tabs, preview with delete, RUN/ABORT."""
 
-    def __init__(self, dicts, settings, template):
+    def __init__(self, project: dict, settings: dict):
         super().__init__()
         self.setWindowTitle("AvatarGen — Simple Empire Character Generator")
-        self.dicts = dicts
+        self.project = project
         self.settings = settings
+        self.project_path = PROJECT_PATH
 
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
-        act_save = QAction("Save template", self)
-        act_save.triggered.connect(self.save_template)
-        act_load = QAction("Open template…", self)
-        act_load.triggered.connect(self.open_template)
-        act_new = QAction("New template", self)
-        act_new.triggered.connect(self.new_template)
+        for label, slot in (
+                ("New project", self.new_project),
+                ("Open project…", self.open_project),
+                ("Save project", self.save_project),
+                ("Save project as…", self.save_project_as)):
+            act = QAction(label, self)
+            act.triggered.connect(slot)
+            file_menu.addAction(act)
+        file_menu.addSeparator()
+        act_new_tpl = QAction("New template", self)
+        act_new_tpl.triggered.connect(self.new_template)
+        file_menu.addAction(act_new_tpl)
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.close)
-        for a in (act_save, act_load, act_new):
-            file_menu.addAction(a)
-        file_menu.addSeparator()
         file_menu.addAction(act_quit)
         opt_menu = menu.addMenu("&Options")
         act_settings = QAction("&Settings…", self)
@@ -441,52 +611,170 @@ class MainWindow(QMainWindow):
         opt_menu.addAction(act_settings)
 
         self.tabs = QTabWidget()
-        self.tab = TemplateTab(template, dicts, settings)
-        self.tabs.addTab(self.tab, template.get("title", "Template"))
+        self.tab = TemplateTab(self._current_template(), self.dicts, self.settings)
+        self.tabs.addTab(self.tab, self.tab.template.get("title", "Template"))
+        self.dict_tabs = QTabWidget()
+        for key, spec in DICT_SPECS.items():
+            self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
+                                  spec["label"])
+        self.tabs.addTab(self.dict_tabs, "Dictionaries")
         self.setCentralWidget(self.tabs)
+        self._update_title()
 
-    def current_template(self):
-        return self.tab.template
+    # --- properties / helpers -----------------------------------------
+    @property
+    def dicts(self):
+        return self.project["dictionaries"]
 
-    def save_template(self):
+    def _current_template(self):
+        if self.project["templates"]:
+            return self.project["templates"][0]
+        tpl = default_template(self.dicts)
+        self.project["templates"].append(tpl)
+        return tpl
+
+    _dirty = False
+
+    def _update_title(self):
+        name = os.path.basename(self.project_path)
+        star = " *" if self._dirty else ""
+        self.setWindowTitle(
+            f"AvatarGen — Simple Empire Character Generator ({name}{star})")
+
+    def _mark_dirty(self):
+        self._dirty = True
+        self._update_title()
+
+    def sync_current_template(self):
         self.tab.sync()
+
+    def _sanitize_template(self, t: dict):
+        """Fix dangling dictionary references after edits/deletes (D47)."""
+        d = self.dicts
+        side_ids = [s["id"] for s in d["sides"]]
+        comp_ids = [c["id"] for c in d["compositions"]]
+        eth_ids = [e["id"] for e in d["ethnicities"]]
+        unis = {u["id"]: u for u in d["uniforms"]}
+        if t.get("side") not in side_ids and side_ids:
+            t["side"] = side_ids[0]
+        if t.get("composition") not in comp_ids and comp_ids:
+            t["composition"] = comp_ids[0]
+        t["ethnicity"] = [e for e in t.get("ethnicity", []) if e in eth_ids] \
+            or eth_ids[:1]
+        t["uniforms"] = [u for u in t.get("uniforms", []) if u in unis]
+        if not t["uniforms"]:
+            fitting = [uid for uid, u in unis.items()
+                       if t.get("subject_type") in u.get("applies_to", [])]
+            t["uniforms"] = (fitting or list(unis))[:1]
+
+    def on_dicts_changed(self):
+        """Dictionary edits: sanitize all templates, rebuild the template tab."""
+        log.info("dictionaries changed; rebuilding template tab")
+        self.tab.sync()
+        for t in self.project["templates"]:
+            self._sanitize_template(t)
+        self._sanitize_template(self.tab.template)
+        old = self.tab.template
+        self.tab.deleteLater()
+        self.tab = TemplateTab(old, self.dicts, self.settings)
+        self.tabs.removeTab(0)
+        self.tabs.insertTab(0, self.tab, old.get("title", "Template"))
+        self.tabs.setCurrentIndex(0)
+        self._mark_dirty()
+
+    # --- project file operations (D46) ---------------------------------
+    def new_project(self):
+        if QMessageBox.question(
+                self, "New project",
+                "Discard current project and start fresh?") != QMessageBox.Yes:
+            return
+        dicts = core.load_dictionary(DEFAULT_DICTS)
+        self.project = core.default_project(dicts)
+        self.project["templates"].append(default_template(dicts))
+        self.project_path = PROJECT_PATH
+        self._rebuild_all()
+        self._mark_dirty()
+
+    def open_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open project", os.path.dirname(self.project_path),
+            "AvatarGen project (*.json)")
+        if not path:
+            return
+        try:
+            project = core.load_project(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Open failed", str(e))
+            return
+        self.project = project
+        self.project_path = path
+        self._rebuild_all()
+        self._dirty = False
+        self._update_title()
+
+    def save_project(self):
+        self.save_project_to(self.project_path)
+
+    def save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save project as", self.project_path,
+            "AvatarGen project (*.json)")
+        if not path:
+            return
+        self.project_path = path
+        self.save_project_to(path)
+
+    def save_project_to(self, path: str):
+        self.sync_current_template()
         tpl = self.tab.template
         if not tpl.get("id"):
             tpl["id"] = core.slugify(tpl.get("title", "template"))
-        path = core.save_template(DEFAULT_USER_DIR, tpl)
-        log.info("template saved: %s (%s) -> %s", tpl["id"], tpl.get("title"), path)
+        self.project["templates"] = [
+            t for t in self.project["templates"] if t.get("id") != tpl["id"]]
+        self.project["templates"].insert(0, tpl)
+        core.save_project(path, self.project)
+        self.project_path = path
+        self._dirty = False
+        self._update_title()
         self.tabs.setTabText(0, tpl.get("title", "Template"))
-        QMessageBox.information(self, "Saved", f"Template saved:\n{path}")
-
-    def open_template(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open template", core.template_dir(DEFAULT_USER_DIR), "JSON (*.json)")
-        if not path:
-            return
-        tpl = core.load_template(path)
-        self.tab = TemplateTab(tpl, self.dicts, self.settings)
-        self.tabs.removeTab(0)
-        self.tabs.addTab(self.tab, tpl.get("title", "Template"))
+        log.info("project saved: %d templates, %d sides -> %s",
+                 len(self.project["templates"]), len(self.dicts["sides"]), path)
 
     def new_template(self):
+        self.sync_current_template()
+        dicts = self.dicts
         tpl = {
             "schema_version": 1,
             "id": "",
             "title": "New template",
             "description": "",
-            "subject_type": "army_officer",
-            "side": self.dicts["sides"][0]["id"],
+            "subject_type": dicts["subject_types"][0]["id"],
+            "side": dicts["sides"][0]["id"],
             "sex": ["male", "female"],
             "age_low": 30, "age_high": 60,
-            "ethnicity": [e["id"] for e in self.dicts["ethnicities"]],
-            "composition": "formal_portrait",
-            "uniforms": ["service_dress"],
+            "ethnicity": [e["id"] for e in dicts["ethnicities"]],
+            "composition": dicts["compositions"][0]["id"],
+            "uniforms": [u["id"] for u in dicts["uniforms"][:1]],
             "style_core_injection": "",
             "negative_injection": "",
         }
-        self.tab = TemplateTab(tpl, self.dicts, self.settings)
+        self.project["templates"].append(tpl)
+        self.tab = TemplateTab(tpl, dicts, self.settings)
         self.tabs.removeTab(0)
-        self.tabs.addTab(self.tab, "New template")
+        self.tabs.insertTab(0, self.tab, "New template")
+        self.tabs.setCurrentIndex(0)
+        self._mark_dirty()
+
+    def _rebuild_all(self):
+        self.tab = TemplateTab(self._current_template(), self.dicts, self.settings)
+        self.tabs.removeTab(0)
+        self.tabs.insertTab(0, self.tab, self.tab.template.get("title", "Template"))
+        while self.dict_tabs.count():
+            self.dict_tabs.removeTab(0)
+        for key, spec in DICT_SPECS.items():
+            self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
+                                  spec["label"])
+        self.tabs.setCurrentIndex(0)
 
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self)
@@ -536,15 +824,34 @@ def default_template(dicts):
     }
 
 
+def load_or_create_project() -> dict:
+    """D46: single project file; created from repo defaults on first run."""
+    if os.path.isfile(PROJECT_PATH):
+        try:
+            project = core.load_project(PROJECT_PATH)
+            log.info("project loaded: %s (%d templates)", PROJECT_PATH,
+                     len(project["templates"]))
+            return project
+        except Exception as e:  # noqa: BLE001 — corrupt file: keep it, start fresh
+            log.error("project load failed (%s); starting from defaults", e)
+    dicts = core.load_dictionary(DEFAULT_DICTS)
+    project = core.default_project(dicts)
+    project["templates"].append(default_template(dicts))
+    core.save_project(PROJECT_PATH, project)
+    log.info("created default project: %s", PROJECT_PATH)
+    return project
+
+
 def main():
     setup_logging(DEFAULT_SETTINGS.get("logging", False))
     log.info("app start")
     app = QApplication([])
-    dicts = core.load_dictionary(DEFAULT_DICTS)
-    log.info("loaded %d sides / %d uniforms / %d compositions from %s",
-             len(dicts["sides"]), len(dicts["uniforms"]),
-             len(dicts["compositions"]), DEFAULT_DICTS)
-    win = MainWindow(dicts, DEFAULT_SETTINGS, default_template(dicts))
+    project = load_or_create_project()
+    log.info("loaded %d sides / %d uniforms / %d compositions",
+             len(project["dictionaries"]["sides"]),
+             len(project["dictionaries"]["uniforms"]),
+             len(project["dictionaries"]["compositions"]))
+    win = MainWindow(project, DEFAULT_SETTINGS)
     win.resize(1000, 700)
     win.show()
     raise SystemExit(app.exec())
