@@ -48,13 +48,20 @@ def _by_id(items: list[dict]) -> dict:
     return {i["id"]: i for i in items}
 
 
-def build_prompt(template: dict, dicts: dict, rng: random.Random) -> tuple[str, dict]:
-    """Assemble one image prompt from a template. Returns (prompt, draw)."""
+def build_prompt(template: dict, dicts: dict, rng: random.Random,
+                 style_core: str | None = None,
+                 negative: str | None = None) -> tuple[str, str, dict]:
+    """Assemble one image prompt from a template. Returns (prompt, draw).
+
+    style_core/negative override the module defaults when the user has
+    customized them in Options -> Prompts."""
     subjects = _by_id(dicts["subject_types"])
     sides = _by_id(dicts["sides"])
     unis = _by_id(dicts["uniforms"])
     comps = _by_id(dicts["compositions"])
     ethn = _by_id(dicts["ethnicities"])
+    style = style_core if style_core is not None else STYLE_CORE
+    neg_base = negative if negative is not None else NEGATIVE
 
     subject = subjects[template["subject_type"]]
     side = sides[template["side"]]
@@ -83,7 +90,7 @@ def build_prompt(template: dict, dicts: dict, rng: random.Random) -> tuple[str, 
 
     insignia = INSIGNIA_OFFICER if subject.get("military") else INSIGNIA_CIVILIAN
 
-    parts = [STYLE_CORE]
+    parts = [style]
     if template.get("style_core_injection"):
         parts.append(template["style_core_injection"])
     if subject["military"]:
@@ -94,9 +101,9 @@ def build_prompt(template: dict, dicts: dict, rng: random.Random) -> tuple[str, 
         f"{comp['prompt_text']}"
     )
     if template.get("negative_injection"):
-        negative = NEGATIVE + ", " + template["negative_injection"]
+        negative_text = neg_base + ", " + template["negative_injection"]
     else:
-        negative = NEGATIVE
+        negative_text = neg_base
 
     draw = {
         "template_id": template["id"],
@@ -106,7 +113,7 @@ def build_prompt(template: dict, dicts: dict, rng: random.Random) -> tuple[str, 
         "seed": rng.randrange(0, 2**31),
     }
     log.debug("draw: %s", json.dumps(draw))
-    return ", ".join(parts), negative, draw
+    return ", ".join(parts), negative_text, draw
 
 
 def workflow(prompt: str, negative: str, seed: int, ckpt: str,

@@ -11,11 +11,12 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QListView,
-    QMainWindow, QMessageBox,
+    QMainWindow, QMessageBox, QInputDialog,
     QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import core
+from . import __version__, AUTHORS, REPO_URL
 from .logging_util import get_logger, setup_logging
 
 log = get_logger("gui")
@@ -25,6 +26,7 @@ DEFAULT_DICTS = os.path.join(APP_DIR, "dictionaries.json")
 DEFAULT_USER_DIR = os.path.join(APP_DIR, "userdata")
 RENDER_DIR = os.path.join(DEFAULT_USER_DIR, "renders")
 PROJECT_PATH = os.path.join(DEFAULT_USER_DIR, "project.json")
+SETTINGS_PATH = os.path.join(DEFAULT_USER_DIR, "settings.json")
 
 
 class RenderWorker(QThread):
@@ -63,7 +65,9 @@ class RenderWorker(QThread):
                     log.info("abort requested at %d/%d", done, n)
                     break
                 prompt, negative, draw = core.build_prompt(
-                    self.template, self.dicts, rng)
+                    self.template, self.dicts, rng,
+                    style_core=self.settings.get("style_core") or None,
+                    negative=self.settings.get("negative_prompt") or None)
                 prefix = f"{draw['template_id']}_{i:04d}_{draw['seed']:010d}"
                 wf = core.workflow(prompt, negative, draw["seed"],
                                    self.settings["checkpoint"], prefix,
@@ -211,6 +215,45 @@ class SettingsDialog(QDialog):
             "quality": self.quality.value(),
             "timeout": self.timeout.value(), "retries": self.retries.value(),
         })
+        super().accept()
+
+
+class PromptsDialog(QDialog):
+    """Global default prompt / negative prompt (Options menu). These are
+    prepended to every generated prompt / base of every negative; per-template
+    injections are added on top by core.build_prompt."""
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Default prompts")
+        self.settings = settings
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(
+            "Style core (prepended to every prompt):"))
+        self.style_edit = QPlainTextEdit()
+        self.style_edit.setPlainText(
+            settings.get("style_core") or core.STYLE_CORE)
+        self.style_edit.setFixedHeight(110)
+        lay.addWidget(self.style_edit)
+        lay.addWidget(QLabel(
+            "Default negative (base of every negative prompt):"))
+        self.neg_edit = QPlainTextEdit()
+        self.neg_edit.setPlainText(
+            settings.get("negative_prompt") or core.NEGATIVE)
+        self.neg_edit.setFixedHeight(110)
+        lay.addWidget(self.neg_edit)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def accept(self):
+        self.settings["style_core"] = self.style_edit.toPlainText().strip()
+        self.settings["negative_prompt"] = self.neg_edit.toPlainText().strip()
+        save_settings(self.settings)
+        log.info("prompt defaults updated (style %d chars, negative %d chars)",
+                 len(self.settings["style_core"]),
+                 len(self.settings["negative_prompt"]))
         super().accept()
 
 
@@ -688,6 +731,26 @@ def _by_id(items):
     return {i["id"]: i for i in items}
 
 
+class DictsDialog(QDialog):
+    """Modeless dialog hosting the dictionary editor sub-tabs (moved out of
+    the main tab widget). Guards against closing with unapplied edits."""
+
+    def __init__(self, main):
+        super().__init__(main, Qt.Window)
+        self.main = main
+        self.setWindowTitle("Dictionaries")
+        lay = QVBoxLayout(self)
+        lay.addWidget(main.dict_tabs)
+        self.resize(820, 560)
+
+    def reject(self):
+        ed = self.main.dict_tabs.currentWidget()
+        if isinstance(ed, DictEditor) and ed._form_dirty():
+            if not self.main._warn_unapplied(ed):
+                return  # Cancel: keep the dialog open
+        super().reject()
+
+
 class MainWindow(QMainWindow):
     """Main window (D39 + D46/D47/D48): project file, template tab,
     dictionary editor tabs, preview with delete, RUN/ABORT."""
@@ -713,6 +776,9 @@ class MainWindow(QMainWindow):
         act_new_tpl = QAction("New template", self)
         act_new_tpl.triggered.connect(self.new_template)
         file_menu.addAction(act_new_tpl)
+        act_rename_tpl = QAction("Rename template…", self)
+        act_rename_tpl.triggered.connect(self.rename_template)
+        file_menu.addAction(act_rename_tpl)
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
@@ -720,6 +786,16 @@ class MainWindow(QMainWindow):
         act_settings = QAction("&Settings…", self)
         act_settings.triggered.connect(self.open_settings)
         opt_menu.addAction(act_settings)
+        act_prompts = QAction("&Prompts…", self)
+        act_prompts.triggered.connect(self.open_prompts)
+        opt_menu.addAction(act_prompts)
+        act_dicts = QAction("&Dictionaries…", self)
+        act_dicts.triggered.connect(self.open_dicts)
+        opt_menu.addAction(act_dicts)
+        help_menu = menu.addMenu("&Help")
+        act_about = QAction("&About", self)
+        act_about.triggered.connect(self.show_about)
+        help_menu.addAction(act_about)
 
         self.tabs = QTabWidget()
         self.tab = TemplateTab(self._current_template(), self.dicts, self.settings)
@@ -728,15 +804,17 @@ class MainWindow(QMainWindow):
         for key, spec in DICT_SPECS.items():
             self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
                                   spec["label"])
-        self.tabs.addTab(self.dict_tabs, "Dictionaries")
+        add_btn = QPushButton("+")
+        add_btn.setToolTip("Add template")
+        add_btn.setFixedSize(26, 22)
+        add_btn.clicked.connect(self.new_template)
+        self.tabs.setCornerWidget(add_btn, Qt.TopRightCorner)
         self.setCentralWidget(self.tabs)
         self._update_title()
-        # Navigation guard: warn when leaving a dictionary editor with
-        # unapplied changes (outer tab switch or inner editor switch).
+        # Navigation guard: warn when switching dictionary editors with
+        # unapplied changes.
         self._tab_guard = False
-        self._cur_outer = self.tabs.currentWidget()
         self._cur_inner = self.dict_tabs.currentWidget()
-        self.tabs.currentChanged.connect(self.on_tab_changed)
         self.dict_tabs.currentChanged.connect(self.on_dict_tab_changed)
 
     # --- properties / helpers -----------------------------------------
@@ -777,20 +855,6 @@ class MainWindow(QMainWindow):
             editor.on_select()  # reload fields from the stored entry
             return True
         return False
-
-    def on_tab_changed(self, idx, *_):
-        if self._tab_guard:
-            return
-        old = self._cur_outer
-        self._cur_outer = self.tabs.widget(idx)
-        if old is self.dict_tabs and self._cur_outer is not self.dict_tabs:
-            editor = self.dict_tabs.currentWidget()
-            if isinstance(editor, DictEditor) and editor._form_dirty():
-                if not self._warn_unapplied(editor):
-                    self._tab_guard = True
-                    self.tabs.setCurrentWidget(old)
-                    self._tab_guard = False
-                    self._cur_outer = old
 
     def on_dict_tab_changed(self, idx, *_):
         if self._tab_guard:
@@ -846,8 +910,10 @@ class MainWindow(QMainWindow):
         old = self.tab.template
         self.tab.deleteLater()
         self.tab = TemplateTab(old, self.dicts, self.settings)
-        self.tabs.removeTab(0)
-        self.tabs.insertTab(0, self.tab, old.get("title", "Template"))
+        idx = self.tabs.indexOf(self.tab)
+        self.tabs.removeTab(max(idx, 0))
+        self.tabs.insertTab(max(idx, 0), self.tab, old.get("title", "Template"))
+        self.tabs.setCurrentIndex(max(idx, 0))
         if source_editor is None or source_editor.key == "subject_types":
             while self.dict_tabs.count():
                 self.dict_tabs.removeTab(0)
@@ -858,8 +924,6 @@ class MainWindow(QMainWindow):
                     w = DictEditor(key, self.dicts, self.on_dicts_changed)
                 self.dict_tabs.addTab(w, spec["label"])
             self._cur_inner = self.dict_tabs.currentWidget()
-        # Stay on the tab the user is on (Apply must not bounce to template).
-        self.tabs.setCurrentWidget(self._cur_outer)
         self._mark_dirty()
 
     # --- project file operations (D46) ---------------------------------
@@ -916,7 +980,8 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self._dirty = False
         self._update_title()
-        self.tabs.setTabText(0, tpl.get("title", "Template"))
+        self.tabs.setTabText(self.tabs.indexOf(self.tab),
+                             tpl.get("title", "Template"))
         log.info("project saved: %d templates, %d sides -> %s",
                  len(self.project["templates"]), len(self.dicts["sides"]), path)
 
@@ -940,27 +1005,26 @@ class MainWindow(QMainWindow):
         }
         self.project["templates"].append(tpl)
         self.tab = TemplateTab(tpl, dicts, self.settings)
-        self.tabs.removeTab(0)
-        self.tabs.insertTab(0, self.tab, "New template")
-        self.tabs.setCurrentIndex(0)
+        self.tabs.addTab(self.tab, tpl["title"])
+        self.tabs.setCurrentWidget(self.tab)
         self._mark_dirty()
 
     def _rebuild_all(self):
         self.tab = TemplateTab(self._current_template(), self.dicts, self.settings)
-        self.tabs.removeTab(0)
-        self.tabs.insertTab(0, self.tab, self.tab.template.get("title", "Template"))
+        self.tabs.clear()  # drop all template tabs; self.tab is re-added first
+        self.tabs.addTab(self.tab, self.tab.template.get("title", "Template"))
         while self.dict_tabs.count():
             self.dict_tabs.removeTab(0)
         for key, spec in DICT_SPECS.items():
             self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
                                   spec["label"])
-        self._cur_outer = self.tabs.currentWidget()
         self._cur_inner = self.dict_tabs.currentWidget()
         self.tabs.setCurrentIndex(0)
 
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
+            save_settings(self.settings)
             setup_logging(self.settings.get("logging", False))
             log.info("settings updated: endpoint=%s checkpoint=%s seed=%d threshold=%d logging=%s",
                      self.settings["endpoint"], self.settings["checkpoint"],
@@ -973,6 +1037,55 @@ class MainWindow(QMainWindow):
                 f"Endpoint: {self.settings['endpoint']}\n"
                 f"Checkpoint: {self.settings['checkpoint']}\n"
                 f"Seed: {self.settings['seed']}")
+
+    def open_prompts(self):
+        PromptsDialog(self.settings, self).exec()
+
+    def open_dicts(self):
+        DictsDialog(self).show()
+
+    def show_about(self):
+        QMessageBox.about(
+            self, "About AvatarGen",
+            f"<b>AvatarGen</b> — Simple Empire Character Generator<br>"
+            f"Version {__version__} (prototype)<br><br>"
+            f"License: MIT (see LICENSE)<br>"
+            f"Author: {AUTHORS}<br>"
+            f'Repository: <a href="{REPO_URL}">{REPO_URL}</a>')
+
+    def rename_template(self):
+        tpl = self.tab.template
+        name, ok = QInputDialog.getText(
+            self, "Rename template", "Template name:",
+            text=tpl.get("title", "Template"))
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Rename template",
+                                "Template name cannot be empty.")
+            return
+        tpl["title"] = name
+        self.tabs.setTabText(self.tabs.indexOf(self.tab), name)
+        self._mark_dirty()
+        log.info("template renamed to %r", name)
+
+    def closeEvent(self, event):
+        """Prompt before exiting with an unsaved project."""
+        if self._dirty:
+            r = QMessageBox.question(
+                self, "Unsaved project",
+                "The project has unsaved changes. Save before exiting?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+            if r == QMessageBox.Save:
+                self.save_project()
+                event.accept()
+            elif r == QMessageBox.Discard:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
 
 
 DEFAULT_SETTINGS = {
@@ -1006,6 +1119,26 @@ def default_template(dicts):
     }
 
 
+def load_settings() -> dict:
+    """Merge DEFAULT_SETTINGS with the user's persisted settings.json."""
+    s = dict(DEFAULT_SETTINGS)
+    if os.path.isfile(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as f:
+                s.update(json.load(f))
+            log.info("settings loaded: %s", SETTINGS_PATH)
+        except Exception as e:  # noqa: BLE001 — corrupt file: use defaults
+            log.warning("settings load failed (%s); using defaults", e)
+    return s
+
+
+def save_settings(settings: dict) -> None:
+    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    log.info("settings saved: %s", SETTINGS_PATH)
+
+
 def load_or_create_project() -> dict:
     """D46: single project file; created from repo defaults on first run."""
     if os.path.isfile(PROJECT_PATH):
@@ -1026,15 +1159,16 @@ def load_or_create_project() -> dict:
 
 
 def main():
-    setup_logging(DEFAULT_SETTINGS.get("logging", False))
     log.info("app start")
     app = QApplication([])
+    settings = load_settings()
+    setup_logging(settings.get("logging", False))
     project = load_or_create_project()
     log.info("loaded %d sides / %d uniforms / %d compositions",
              len(project["dictionaries"]["sides"]),
              len(project["dictionaries"]["uniforms"]),
              len(project["dictionaries"]["compositions"]))
-    win = MainWindow(project, DEFAULT_SETTINGS)
+    win = MainWindow(project, settings)
     win.resize(1000, 700)
     win.show()
     raise SystemExit(app.exec())
