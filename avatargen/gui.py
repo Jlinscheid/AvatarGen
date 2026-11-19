@@ -8,9 +8,10 @@ import random
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
+    QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QListView,
+    QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -284,11 +285,23 @@ class DictEditor(QWidget):
                 self.applies[st["id"]] = cb
             self.applies_box.setLayout(ag)
             form.addWidget(self.applies_box)
-        apply_btn = QPushButton("Apply changes")
-        apply_btn.clicked.connect(self.apply)
-        form.addWidget(apply_btn)
+        self.apply_btn = QPushButton("Apply changes")
+        self.apply_btn.clicked.connect(self.apply)
+        self.apply_btn.setEnabled(False)
+        form.addWidget(self.apply_btn)
         form.addStretch(1)
         root.addLayout(form, 2)
+        # Dirty tracking: Apply is enabled only when the form differs from
+        # the stored entry (or when there is no entry to compare against).
+        self.name_edit.textChanged.connect(self._update_apply_btn)
+        self.text_edit.textChanged.connect(self._update_apply_btn)
+        for w in self.extra_edits.values():
+            w.textChanged.connect(self._update_apply_btn)
+        for cb in self.bool_checks.values():
+            cb.toggled.connect(self._update_apply_btn)
+        if self.spec.get("applies_to"):
+            for cb in self.applies.values():
+                cb.toggled.connect(self._update_apply_btn)
         self.populate()
 
     def _entries(self):
@@ -318,6 +331,31 @@ class DictEditor(QWidget):
         eid = item.data(Qt.UserRole)
         return next((e for e in self._entries() if e["id"] == eid), None)
 
+    def _form_dirty(self) -> bool:
+        """True when the on-screen form differs from the stored entry."""
+        e = self._current()
+        if not e:
+            return False
+        if self.name_edit.text().strip() != e["display_name"]:
+            return True
+        if self.text_edit.toPlainText() != e.get(self.spec["text_field"], ""):
+            return True
+        for key, w in self.extra_edits.items():
+            if w.text().strip() != e.get(key, ""):
+                return True
+        for key, cb in self.bool_checks.items():
+            if cb.isChecked() != bool(e.get(key)):
+                return True
+        if self.spec.get("applies_to"):
+            stored = set(e.get("applies_to", []))
+            checked = {sid for sid, cb in self.applies.items() if cb.isChecked()}
+            if checked != stored:
+                return True
+        return False
+
+    def _update_apply_btn(self, *_):
+        self.apply_btn.setEnabled(self._form_dirty())
+
     def on_select(self, *_):
         e = self._current()
         if not e:
@@ -331,6 +369,7 @@ class DictEditor(QWidget):
         if self.spec.get("applies_to"):
             for sid, cb in self.applies.items():
                 cb.setChecked(sid in e.get("applies_to", []))
+        self._update_apply_btn()
 
     def _clear_fields(self):
         self.name_edit.clear()
@@ -339,6 +378,10 @@ class DictEditor(QWidget):
             w.clear()
         for cb in self.bool_checks.values():
             cb.setChecked(False)
+        if self.spec.get("applies_to"):
+            for cb in self.applies.values():
+                cb.setChecked(False)
+        self._update_apply_btn()
 
     def add(self):
         entries = self._entries()
@@ -387,6 +430,7 @@ class DictEditor(QWidget):
         log.info("dictionary %s: updated entry %s", self.key, e["id"])
         self.populate(select_id=e["id"])
         self.on_change(self)
+        self._update_apply_btn()
 
 
 class TemplateTab(QWidget):
@@ -496,24 +540,24 @@ class TemplateTab(QWidget):
         self.check_count()
         left.addStretch(1)  # pin contents to top-left on resize (D50)
 
-        # Preview pane: saved renders (D39 #4), multi-select delete (D48)
+        # Preview pane: saved renders (D39 #4), checkbox multi-select delete (D48)
         pv = QVBoxLayout()
         self.preview = QListWidget()
         self.preview.setViewMode(QListWidget.IconMode)
-        self.preview.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.preview.setIconSize(QPixmap(96, 96).size())
-        self.preview.setFixedWidth(260)
-        pv.addWidget(self.preview)
+        self.preview.setResizeMode(QListView.Adjust)
+        self.preview.setSpacing(6)
+        self.preview.setIconSize(QPixmap(128, 128).size())
+        self.preview.setFixedWidth(300)
+        pv.addWidget(self.preview, 1)
         sel_row = QHBoxLayout()
         sel_all = QPushButton("Select all")
-        sel_all.clicked.connect(self.preview.selectAll)
+        sel_all.clicked.connect(self.toggle_select_all)
         self.del_btn = QPushButton("Delete selected")
         self.del_btn.clicked.connect(self.delete_selected)
         sel_row.addWidget(sel_all)
         sel_row.addWidget(self.del_btn)
         pv.addLayout(sel_row)
-        pv.addStretch(1)  # pin preview column to top-left on resize (D50)
-        root.addLayout(pv)
+        root.addLayout(pv, 1)  # preview column fills window height
         self.refresh_preview()
 
         self.on_subject_change()
@@ -603,15 +647,27 @@ class TemplateTab(QWidget):
             self.preview.addItem("(no saved renders yet)")
             return
         for name in files:
-            self.preview.addItem(name)
+            item = QListWidgetItem(name)
             icon = QPixmap(os.path.join(outdir, name))
             if not icon.isNull():
-                self.preview.item(self.preview.count() - 1).setIcon(icon)
+                item.setIcon(icon)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.preview.addItem(item)
+
+    def toggle_select_all(self):
+        """Check every photo, or clear all if all are already checked."""
+        items = [self.preview.item(i) for i in range(self.preview.count())]
+        photos = [it for it in items if it.flags() & Qt.ItemIsUserCheckable]
+        target = Qt.Unchecked if photos and all(
+            it.checkState() == Qt.Checked for it in photos) else Qt.Checked
+        for it in photos:
+            it.setCheckState(target)
 
     def delete_selected(self):
-        """Delete the selected render(s); manifest rows kept but marked (D48)."""
-        names = [it.text() for it in self.preview.selectedItems()
-                 if not it.text().startswith("(")]
+        """Delete the checked render(s); manifest rows kept but marked (D48)."""
+        names = [it.text() for it in self.preview.findItems("", Qt.MatchContains)
+                 if it.checkState() == Qt.Checked]
         if not names:
             return
         if QMessageBox.question(
@@ -675,6 +731,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dict_tabs, "Dictionaries")
         self.setCentralWidget(self.tabs)
         self._update_title()
+        # Navigation guard: warn when leaving a dictionary editor with
+        # unapplied changes (outer tab switch or inner editor switch).
+        self._tab_guard = False
+        self._cur_outer = self.tabs.currentWidget()
+        self._cur_inner = self.dict_tabs.currentWidget()
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        self.dict_tabs.currentChanged.connect(self.on_dict_tab_changed)
 
     # --- properties / helpers -----------------------------------------
     @property
@@ -699,6 +762,48 @@ class MainWindow(QMainWindow):
     def _mark_dirty(self):
         self._dirty = True
         self._update_title()
+
+    # --- unapplied-changes navigation guard -----------------------------
+    def _warn_unapplied(self, editor) -> bool:
+        """Ask what to do with unapplied edits; True = safe to navigate."""
+        r = QMessageBox.question(
+            self, "Unapplied changes",
+            f"The {editor.spec['label']} editor has unapplied changes.",
+            QMessageBox.Apply | QMessageBox.Discard | QMessageBox.Cancel)
+        if r == QMessageBox.Apply:
+            editor.apply()
+            return True
+        if r == QMessageBox.Discard:
+            editor.on_select()  # reload fields from the stored entry
+            return True
+        return False
+
+    def on_tab_changed(self, idx, *_):
+        if self._tab_guard:
+            return
+        old = self._cur_outer
+        self._cur_outer = self.tabs.widget(idx)
+        if old is self.dict_tabs and self._cur_outer is not self.dict_tabs:
+            editor = self.dict_tabs.currentWidget()
+            if isinstance(editor, DictEditor) and editor._form_dirty():
+                if not self._warn_unapplied(editor):
+                    self._tab_guard = True
+                    self.tabs.setCurrentWidget(old)
+                    self._tab_guard = False
+                    self._cur_outer = old
+
+    def on_dict_tab_changed(self, idx, *_):
+        if self._tab_guard:
+            return
+        old = self._cur_inner
+        self._cur_inner = self.dict_tabs.widget(idx)
+        if isinstance(old, DictEditor) and old is not self._cur_inner:
+            if old._form_dirty():
+                if not self._warn_unapplied(old):
+                    self._tab_guard = True
+                    self.dict_tabs.setCurrentWidget(old)
+                    self._tab_guard = False
+                    self._cur_inner = old
 
     def sync_current_template(self):
         self.tab.sync()
@@ -752,7 +857,9 @@ class MainWindow(QMainWindow):
                 else:
                     w = DictEditor(key, self.dicts, self.on_dicts_changed)
                 self.dict_tabs.addTab(w, spec["label"])
-        self.tabs.setCurrentIndex(0)
+            self._cur_inner = self.dict_tabs.currentWidget()
+        # Stay on the tab the user is on (Apply must not bounce to template).
+        self.tabs.setCurrentWidget(self._cur_outer)
         self._mark_dirty()
 
     # --- project file operations (D46) ---------------------------------
@@ -847,6 +954,8 @@ class MainWindow(QMainWindow):
         for key, spec in DICT_SPECS.items():
             self.dict_tabs.addTab(DictEditor(key, self.dicts, self.on_dicts_changed),
                                   spec["label"])
+        self._cur_outer = self.tabs.currentWidget()
+        self._cur_inner = self.dict_tabs.currentWidget()
         self.tabs.setCurrentIndex(0)
 
     def open_settings(self):
